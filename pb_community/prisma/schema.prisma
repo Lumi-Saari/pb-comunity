@@ -1,0 +1,91 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  userId   String   @id @db.VarChar(255)  // sub が直接入る
+  username String   @unique @db.VarChar(255)
+  Private     Private[]
+  Room        Room[]
+  RoomPost    RoomPost[]
+  PrivatePost PrivatePost[]
+  PrivateMember  PrivateMember[]
+  isDeleted    Boolean @default(false)
+  
+  @@map(name: "users")
+}
+
+
+model Room {
+  roomId    String   @id @default(uuid())
+  roomName  String   @db.VarChar(255)
+  memo      String   @db.Text
+  createBy  String
+  user      User     @relation(fields: [createBy], references: [userId])
+  updatedAt DateTime @updatedAt
+  RoomPost  RoomPost[]
+
+  @@map(name: "rooms")
+}
+
+model Private {
+  privateId   String        @id @default(uuid())
+  privateName String        @db.VarChar(255)
+  memo        String        @db.Text
+  createBy    String
+  user        User          @relation(fields: [createBy], references: [userId])
+  updatedAt   DateTime      @updatedAt
+  PrivatePost PrivatePost[]
+  members     PrivateMember[]
+
+  @@map(name: "privates")
+}
+
+model PrivateMember {
+  id          String @id @default(uuid())
+  privateId   String 
+  userId      String
+  joinedAt    DateTime @default(now())
+
+  private Private @relation(fields: [privateId], references: [privateId])
+  user User       @relation(fields: [userId], references: [userId])     
+
+  @@unique([privateId, userId])
+}
+
+model RoomPost {
+  postId    String   @id @default(uuid())
+  roomId    String
+  userId    String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  isDeleted Boolean  @default(false) // 管理者が削除したら true
+
+  room Room @relation(fields: [roomId], references: [roomId])
+  user User @relation(fields: [userId], references: [userId])
+}
+
+model PrivatePost {
+  postId    String   @id @default(uuid())
+  privateId String
+  userId    String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  isDeleted Boolean  @default(false)
+
+  private Private @relation(fields: [privateId], references: [privateId])
+  user    User    @relation(fields: [userId], references: [userId])
+
+  @@map("private_posts")
+}
