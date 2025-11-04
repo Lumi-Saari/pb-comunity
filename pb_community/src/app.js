@@ -25,6 +25,7 @@ const roomRouter = require('./routes/rooms');
 const privateRouter = require('./routes/privates');
 const postsRouter = require('./routes/posts');
 const accountRouter = require('./routes/account');
+const notificationRouter = require('./routes/notifications')
 
 const app = new Hono();
 
@@ -134,7 +135,8 @@ app.route('/rooms', roomRouter);
 app.route('/privates', privateRouter);
 app.route('/', postsRouter);
 app.route('/account', accountRouter);
-
+app.route('/notifications', notificationRouter);
+app.use('*', serveStatic({ root: './public/stylesheets' }));
 
 // 404 Not Found
 app.notFound((c) => {

@@ -60,7 +60,6 @@ function privateTable(privates) {
 app.get('/', async (c) => {
   const session = c.get('session');
   const { user } = c.get('session') ?? {};
-  const userId = session?.user?.userId;
 
 let rooms = [];
 let privates = [];
@@ -80,6 +79,7 @@ if (user) {
     }),
   ]);
 } 
+
   return c.html(
   layout(
     c,
@@ -94,6 +94,21 @@ if (user) {
         <a href="/account">アカウント管理</a>
       </div>
       <h2>メニュー</h2>
+      <div>
+      <a href="/notifications" id="notif-link">
+      🔔 通知 <span id="notif-count"></span>
+      </a> 
+       <script>
+       async function updateNotifCount() {
+        const res = await fetch('/notifications/count');
+        const data = await res.json();
+        const el = document.getElementById('notif-count');
+        el.textContent = data.count > 0 ? '(' + data.count + ')' : '';
+       }
+      updateNotifCount();
+       setInterval(updateNotifCount, 10000); // 10秒ごとに更新
+      </script>
+      </div>
       <div>
         <a href="/users">ユーザー一覧</a>
       </div>

@@ -18,12 +18,12 @@ app.get('/new', (c) => {
     html`
       <form method="post" action="/rooms">
         <div>
-          <h5>ルーム名</h5>
-          <input type="text" name="roomName" />
+          <h5>ルーム名 二十五文字まで</h5>
+          <input type="text" name="roomName" maxlength="25" />
         </div>
         <div>
-          <h5>説明（なくてもOK）</h5>
-          <textarea name="memo"></textarea>
+          <h5>説明（なくてもOK）五十文字まで</h5>
+          <textarea name="memo" maxlength="50"></textarea>
         </div>
         <button type="submit">ルームを作成</button>
       </form>
@@ -80,8 +80,35 @@ app.post('/:roomId/delete', async (c) => {
   return c.redirect('/');
 });
 
+//　TODO 説明を更新する機能
+app.post('/roomId/memo', async (c) => {
+  const { user } = c.get('session') ?? {};
+  const { roomId } = c.req.param();
+  const body = await c.req.parseBody();
+
+  if (!user?.userId) return c.text('ログインしてください', 401);
+
+  const room = await prisma.room.findUnique({ where: { roomId} });
+  if (!room) return c.text('ルームが見つかりません', 404);
+
+  // 作成者チェックを追加
+  if (room.createBy !== user.userId) {
+    return c.text('このルームの作成者のみが説明を変更できます', 403);
+  }
+
+  await prisma.memo.upsert({
+    where: { roomId },
+    update: { memo: body.memo || "" },
+    create: { roomId, memo: body.memo || "" },
+  })
+})
+
 app.get('/:roomId', async (c) => {
   const { roomId } = c.req.param();
+  const memo = await prisma.room.findUnique({
+    where: { roomId },
+    select: { memo: true }
+  }).then(r => r?.memo);
 
   const room = await prisma.room.findUnique({
     where: { roomId },
@@ -100,6 +127,21 @@ const posts = await prisma.RoomPost.findMany({
   }
 });
 
+ const { user } = c.get('session') ?? {};
+if (!user?.userId) return c.redirect('/login');
+
+// UserRoomSetting テーブルに notify TRUE/FALSE の設定があるか探す
+const setting = await prisma.userRoomSetting.findFirst({
+  where: {
+    roomId,
+    userId: user.userId,
+  },
+});
+
+// 判定用フラグ
+const notifyEnabled = !!(setting && setting.notify);
+
+
 const postList = posts.map(
   (p) => `
   <p><strong>${p.user.username}</strong> :
@@ -114,18 +156,42 @@ const postList = posts.map(
   return c.html(`
     <h1>${room.roomName} へようこそ！</h1>
     <a href="/">トップページに戻る</a>
+    <h4>説明: ${memo || 'なし'}</h4>
+    <button id="notify-btn"
+     data-room-id="${roomId}"
+    data-notify="${notifyEnabled ? 'true' : 'false'}">
+    ${notifyEnabled ? '🔔 通知オン' : '🔕 通知オフ'}
+   </button>
+    <script src="/notify.js"></script>
     <form method="POST" action="/rooms/${roomId}/delete" onsubmit="return confirm('本当にこのルームを削除しますか？')">
       <button type="submit">このルームを削除する</button>
     </form>
     <div id="postList">
       ${postList || '<p>投稿はまだありません</p>'}
     </div>
-
     <form method="POST" action="/rooms/${roomId}/posts">
       <input type="text" name="content" required />
       <button type="submit">投稿</button>
     </form>
   `);
 });
+
+// 通知オン／オフ切り替え
+app.post('/:roomId/notify', async (c) => {
+  const { user } = c.get('session') ?? {};
+  if (!user?.userId) return c.text('ログインしてください', 401);
+
+  const { roomId } = c.req.param();
+  const { notify } = await c.req.json();
+
+  await prisma.userRoomSetting.upsert({
+    where: { userId_roomId: { userId: user.userId, roomId } },
+    update: { notify },
+    create: { userId: user.userId, roomId, notify },
+  });
+
+  return c.json({ ok: true });
+});
+
 
 module.exports = app;

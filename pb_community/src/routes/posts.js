@@ -55,17 +55,41 @@ function containsBannedWords(content) {
     return c.text("!不適切な言葉が含まれています!", 400);
   }
 
-  await prisma.RoomPost.create({
-    data: {
-      content,
-      roomId,
-      userId: user.userId,
-    },
-  });
+// 投稿作成
+const post = await prisma.roomPost.create({
+  data: {
+    roomId,
+    userId: user.userId,
+    content,
+  },
+});
+
+// 通知設定を取得（投稿者以外で通知ONの人）
+const settings = await prisma.userRoomSetting.findMany({
+  where: {
+    roomId,
+    notify: true,
+    NOT: { userId: user.userId },
+  },
+});
+
+// 通知レコードを作成
+await Promise.all(
+  settings.map(t =>
+    prisma.notification.create({
+      data: {
+        userId: t.userId,
+        message: `${user.name} さんがルームに投稿しました`,
+        url: `/rooms/${roomId}#post-${post.id}`, // ✅ post.id はここで定義済み
+      },
+    })
+  )
+);
 
   // 投稿後はルームページにリダイレクト
   return c.redirect(`/rooms/${roomId}`, 303);
 });
+ 
 
 app.post('/privates/:privateId/posts', async (c) => {
   const { privateId } = c.req.param();
@@ -92,15 +116,40 @@ if(!existingUser) return c.text('ユーザーが存在しません',400);
     return c.text("不適切な投稿が含まれています", 400);
   }
 
- await prisma.PrivatePost.create({
+const post = await prisma.privatePost.create({
   data: {
     content,
     privateId,
     userId: user.userId,
   },
- });
-
- return c.redirect(`/privates/${privateId}`,303);
 });
+
+// 通知対象の設定を取得
+const settings = await prisma.userRoomSetting.findMany({
+  where: {
+    privateId,
+    notify: true,
+    NOT: { userId: user.userId },
+  },
+});
+
+// 通知レコードを作成
+await Promise.all(
+  settings.map(s =>
+    prisma.notification.create({
+      data: {
+        userId: s.userId,
+        message: `${user.name} さんがプライベートルームに投稿しました`,
+        url: `/privates/${privateId}#post-${post.id}`,
+      },
+    })
+  )
+);
+const session = c.get('session');
+console.log(session);
+
+return c.redirect(`/privates/${privateId}`, 303);
+});
+
 
 module.exports = app;

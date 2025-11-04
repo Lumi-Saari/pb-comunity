@@ -22,6 +22,8 @@ model User {
   PrivatePost PrivatePost[]
   PrivateMember  PrivateMember[]
   isDeleted    Boolean @default(false)
+  UserRoomSetting UserRoomSetting[]
+  Notification    Notification[]
   
   @@map(name: "users")
 }
@@ -35,6 +37,7 @@ model Room {
   user      User     @relation(fields: [createBy], references: [userId])
   updatedAt DateTime @updatedAt
   RoomPost  RoomPost[]
+  Setting   UserRoomSetting []
 
   @@map(name: "rooms")
 }
@@ -48,6 +51,7 @@ model Private {
   updatedAt   DateTime      @updatedAt
   PrivatePost PrivatePost[]
   members     PrivateMember[]
+  Setting     UserRoomSetting[]
 
   @@map(name: "privates")
 }
@@ -88,4 +92,33 @@ model PrivatePost {
   user    User    @relation(fields: [userId], references: [userId])
 
   @@map("private_posts")
+}
+
+model UserRoomSetting {
+  id        Int      @id @default(autoincrement())
+  userId    String
+  roomId    String?
+  privateId String?
+  notify    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User     @relation(fields: [userId], references: [userId])
+  room     Room?    @relation(fields: [roomId], references: [roomId])
+  private  Private? @relation(fields: [privateId], references: [privateId])
+
+  @@unique([userId, roomId, privateId])
+  @@unique([userId, privateId], name: "userId_privateId")
+  @@unique([userId, roomId], name: "userId_roomId")
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    String   // 通知を受け取る人
+  message   String
+  url       String?  // 通知をクリックしたときに飛ぶ先
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [userId])
 }

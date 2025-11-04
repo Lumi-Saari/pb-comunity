@@ -17,12 +17,12 @@ app.get('/new', (c) => {
     html`
       <form method="post" action="/privates">
         <div>
-          <h5>ルーム名</h5>
-          <input type="text" name="privateName" />
+          <h5>ルーム名 二十五文字まで</h5>
+          <input type="text" name="privateName"  maxlength="25" />
         </div>
         <div>
-          <h5>説明（なくてもOK）</h5>
-          <textarea name="memo"></textarea>
+          <h5>説明（なくてもOK）五十文字まで</h5>
+          <textarea name="memo" maxlength="50" ></textarea>
         </div>
         <button type="submit">プライベートルームを作成</button>
       </form>
@@ -70,34 +70,57 @@ app.post('/:privateId/invitation', async (c) => {
   const { user } = c.get('session') ?? {};
   const { privateId } = c.req.param();
   const body = await c.req.parseBody();
-  const username = body.username;
+  const username = body.username; // 招待対象ユーザー名を取得
 
   if (!user?.userId) return c.text('ログインしてください', 401);
 
+  // 招待先ルーム確認
   const room = await prisma.private.findUnique({ where: { privateId } });
   if (!room) return c.text('ルームが見つかりません', 404);
 
-  // 作成者チェックを追加
+  // 作成者チェック
   if (room.createBy !== user.userId) {
     return c.text('このルームの作成者のみがメンバーを招待できます', 403);
   }
 
-  await prisma.privateMember.upsert({
+  // 招待対象ユーザー検索
+  const invitee = await prisma.user.findUnique({ where: { username } });
+  if (!invitee) return c.text('指定されたユーザーが見つかりません', 404);
+
+  // すでにメンバーの場合はスキップ
+  const existingMember = await prisma.privateMember.findUnique({
     where: { privateId_userId: { privateId, userId: invitee.userId } },
-    update: {},
-    create: { privateId, userId: invitee.userId },
+  });
+  if (existingMember) {
+    return c.text(`${invitee.username} さんはすでにメンバーです`, 400);
+  }
+
+  // メンバー追加
+  await prisma.privateMember.create({
+    data: { privateId, userId: invitee.userId },
   });
 
+  // 招待メッセージ投稿
   await prisma.privatePost.create({
     data: {
       privateId,
       userId: user.userId,
-      content: `${user.username} さんが ${invitee.username} さんを招待しました。`,
+      content: `${user.name} さんが ${invitee.username} さんを招待しました。`,
     },
   });
 
+  // 通知作成
+   await prisma.notification.create({
+  data: {
+    userId: invitee.userId,
+    message: `${user.name} さんがあなたをプライベートルーム "${room.privateName}" に招待しました。`,
+    url: `/privates/${privateId}`,
+  },
+});
+
   return c.redirect(`/privates/${privateId}`);
 });
+
 
 app.post('/:privateId/delete', async (c) => {
   const { user } = c.get('session') ?? {};
@@ -153,6 +176,20 @@ app.get('/:privateId', async (c) => {
   }
  }); 
 
+ const { user } = c.get('session') ?? {};
+if (!user?.userId) return c.redirect('/login');
+
+// UserRoomSetting テーブルに notify TRUE/FALSE の設定があるか探す
+const setting = await prisma.userRoomSetting.findFirst({
+  where: {
+    privateId,
+    userId: user.userId,
+  },
+});
+
+// 判定用フラグ
+const notifyEnabled = !!(setting && setting.notify);
+
  const postList = posts.map(
   (p) => `
   <p><strong>${p.user.username}</strong> :
@@ -171,6 +208,12 @@ app.get('/:privateId', async (c) => {
      <input type="text" name="username" placeholder="招待する人の名前">
      <button type="submit">招待する</button>
     </form>
+     <button id="notify-btn"
+     data-private-id="${privateId}"
+    data-notify="${notifyEnabled ? 'true' : 'false'}">
+    ${notifyEnabled ? '🔔 通知オン' : '🔕 通知オフ'}
+   </button>
+    <script src="/notify.js"></script>
     <form method="POST" action="/privates/${privateId}/delete" onsubmit="return confirm('本当にこのプライベートルームを削除しますか？')">
       <button type="submit">このプライベートルームを削除する</button>
     </form>
@@ -184,6 +227,23 @@ app.get('/:privateId', async (c) => {
     </form>
   `);
   
+});
+
+// 通知オン／オフ切り替え
+app.post('/:privateId/notify', async (c) => {
+  const { user } = c.get('session') ?? {};
+  if (!user?.userId) return c.text('ログインしてください', 401);
+
+  const { privateId } = c.req.param();
+  const { notify } = await c.req.json();
+
+  await prisma.userRoomSetting.upsert({
+    where: { userId_privateId: { userId: user.userId, privateId } },
+    update: { notify },
+    create: { userId: user.userId, privateId, notify },
+  });
+
+  return c.json({ ok: true });
 });
 
 module.exports = app;
