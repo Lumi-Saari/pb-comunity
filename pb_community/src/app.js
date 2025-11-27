@@ -25,7 +25,8 @@ const roomRouter = require('./routes/rooms');
 const privateRouter = require('./routes/privates');
 const postsRouter = require('./routes/posts');
 const accountRouter = require('./routes/account');
-const notificationRouter = require('./routes/notifications')
+const notificationRouter = require('./routes/notifications');
+const uploadRouter = require('./routes/uploads');
 
 const app = new Hono();
 
@@ -83,39 +84,48 @@ app.get('/auth/google/callback', async (c) => {
 
   const session = c.get('session');
 
-// 3. 既存ユーザー検索
-let user = await prisma.user.findUnique({
-  where: { userId: userInfo.sub },
-});
+  // 3. 既存ユーザー検索
+  let user = await prisma.user.findUnique({
+    where: { userId: userInfo.sub },
+  });
 
-// 初回ログイン
-if (!user) {
-  let defaultUserName;
-  while (true) {
-    // 仮ユーザー名を作る
-    defaultUserName = `user_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  // 🟢 退会済みユーザーなら復活（usernameも再生成）
+  if (user && user.isDeleted) {
+    let newUserName;
+    while (true) {
+      newUserName = `user_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const exists = await prisma.user.findUnique({ where: { username: newUserName } });
+      if (!exists) break;
+    }
 
-    // すでに存在するかチェック
-    const exists = await prisma.user.findUnique({ where: { username: defaultUserName } });
-    if (!exists) break; // 被らなければループ終了
+    user = await prisma.user.update({
+      where: { userId: userInfo.sub },
+      data: {
+        isDeleted: false,
+        username: newUserName,
+      },
+    });
+  }
+  // 4. 初回ログイン（新規登録）
+  if (!user) {
+    let defaultUserName;
+    while (true) {
+      defaultUserName = `user_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const exists = await prisma.user.findUnique({ where: { username: defaultUserName } });
+      if (!exists) break;
+    }
+
+    user = await prisma.user.create({
+      data: {
+        userId: userInfo.sub,
+        username: defaultUserName,
+      },
+    });
   }
 
-  // 新規作成
-  user = await prisma.user.create({
-    data: {
-      userId: userInfo.sub,
-      username: defaultUserName,
-    },
-  });
-}
-
-// 4. セッションに保存
-session.user = {
-  userId: user.userId,
-  login: user.email,
-  name: user.username,
-};
-await session.save();
+  // 5. セッションに保存
+  session.user = user;
+  await session.save();
 
 // 5. 名前が仮ユーザー名なら必ず setup-name へ
 if (user.username.startsWith("user_")) {
@@ -137,6 +147,9 @@ app.route('/', postsRouter);
 app.route('/account', accountRouter);
 app.route('/notifications', notificationRouter);
 app.use('*', serveStatic({ root: './public/stylesheets' }));
+app.route('/rooms/uploads', uploadRouter);
+app.route('/privates/uploads', uploadRouter);
+
 
 // 404 Not Found
 app.notFound((c) => {

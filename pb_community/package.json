@@ -11,13 +11,16 @@
     "test": "jest --setupFiles dotenv/config"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.5",
+    "@hono/node-server": "^1.19.6",
     "@hono/oauth-providers": "0.8.0",
-    "@prisma/client": "^6.15.0",
+    "@prisma/client": "^6.19.0",
+    "express": "^5.1.0",
     "formidable": "^3.5.4",
     "hono": "^4.9.11",
     "hono-sessions": "^0.8.0",
-    "iron-session": "^8.0.4"
+    "iron-session": "^8.0.4",
+    "multer": "^2.0.2",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "dotenv": "16.4.5",

@@ -16,17 +16,35 @@ datasource db {
 model User {
   userId   String   @id @db.VarChar(255)  // sub が直接入る
   username String   @unique @db.VarChar(255)
+  activityPlace String?  @db.VarChar(255)  // 活動場所（例：東京、オンライン、学校名など）
+  bio           String?  @db.Text          // 一言（自己紹介やステータス）
+  createdAt     DateTime @default(now())
+  isDeleted    Boolean @default(false)
   Private     Private[]
   Room        Room[]
   RoomPost    RoomPost[]
   PrivatePost PrivatePost[]
   PrivateMember  PrivateMember[]
-  isDeleted    Boolean @default(false)
   UserRoomSetting UserRoomSetting[]
   Notification    Notification[]
+  iconUrl        String?
+  RoomPostReply   RoomPostReply[]
+  PrivatePostReply PrivatePostReply[]
   
   @@map(name: "users")
 }
+
+model Image {
+  id           Int      @id @default(autoincrement())
+  userId       String
+  fileName     String
+  originalName String
+  width        Int
+  height       Int
+  size         Int
+  createdAt    DateTime @default(now())
+}
+
 
 
 model Room {
@@ -75,9 +93,12 @@ model RoomPost {
   content   String   @db.Text
   createdAt DateTime @default(now())
   isDeleted Boolean  @default(false) // 管理者が削除したら true
+  imageUrl     String?
+  thumbnailUrl String?
 
   room Room @relation(fields: [roomId], references: [roomId])
   user User @relation(fields: [userId], references: [userId])
+  replies   RoomPostReply[]
 }
 
 model PrivatePost {
@@ -87,11 +108,36 @@ model PrivatePost {
   content   String   @db.Text
   createdAt DateTime @default(now())
   isDeleted Boolean  @default(false)
+  imageUrl     String?  
+  thumbnailUrl String? 
 
   private Private @relation(fields: [privateId], references: [privateId])
   user    User    @relation(fields: [userId], references: [userId])
+  replies     PrivatePostReply[]
 
   @@map("private_posts")
+}
+
+model RoomPostReply {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+
+  RoomPost  RoomPost @relation(fields: [postId], references: [postId])
+  user      User     @relation(fields: [userId], references: [userId])
+}
+
+model PrivatePostReply {
+  id        String    @id @default(cuid())
+  postId    String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+
+  PrivatePost PrivatePost @relation(fields: [postId], references: [postId])
+  user        User        @relation(fields: [userId], references: [userId])
 }
 
 model UserRoomSetting {

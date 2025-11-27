@@ -8,6 +8,27 @@ const prisma = new PrismaClient({ log: ['query'] });
 
 const app = new Hono();
 
+function privateTable(privates) {
+  return html`
+    <table>
+      <thead>
+        <tr><th>プライベートルーム名</th></tr>
+      </thead>
+      <tbody>
+        ${privates.map(
+          (p) => html`
+            <tr>
+              <td>
+                <a href="/privates/${p.privateId}">${p.privateName}</a>
+              </td>
+            </tr>
+          `
+        )}
+      </tbody>
+    </table>
+  `;
+}
+
 app.use(ensureAuthenticated());
 app.get('/new', (c) => {
   return c.html(
@@ -22,7 +43,7 @@ app.get('/new', (c) => {
         </div>
         <div>
           <h5>説明（なくてもOK）五十文字まで</h5>
-          <textarea name="memo" maxlength="50" ></textarea>
+          <textarea name="memo" rows="5" cols="40" maxlength="50" ></textarea>
         </div>
         <button type="submit">プライベートルームを作成</button>
       </form>
@@ -155,26 +176,65 @@ app.post('/:privateId/delete', async (c) => {
   return c.redirect('/');
 });
 
+app.get('/lists', async (c) => {
+  const { user } = c.get('session') ?? {};
+
+  if (!user) {
+    return c.redirect('/auth/google');
+  }
+
+  const privates = await prisma.private.findMany({
+    where: {
+      members: { some: { userId: user.userId } },
+    },
+    orderBy: { updatedAt: 'desc' },
+    select: { privateId: true, privateName: true, updatedAt: true },
+  });
+
+  return c.html(
+    layout(
+      c,
+      'プライベートルーム一覧',
+      html`
+      <a href="/">トップページに戻る</a>
+        <h2>プライベートルーム一覧</h2>
+        ${privates.length > 0
+          ? privateTable(privates)
+          : html`<p>まだ招待されているプライベートルームはありません</p>`}
+      `
+    )
+  );
+});
 
 app.get('/:privateId', async (c) => {
   const { privateId } = c.req.param();
 
-  const private = await prisma.private.findUnique({
-    where: { privateId },
-    select: { privateName: true }
-  });
+
+const private = await prisma.private.findUnique({
+  where: { privateId },
+  select: {
+    privateName: true,
+    user: {
+      select: {
+        username: true
+      }
+    }
+  }
+});
+
 
   if (!private) return c.text('ルームが存在しません', 404);
+
+  const memo = await prisma.private.findUnique({
+    where: { privateId },
+    select: { memo: true }
+  }).then(r => r?.memo);
 
  const posts = await prisma.privatePost.findMany({
   where: { privateId },
   orderBy: { createdAt: 'desc' },
-  include: {
-    user: {
-      select: { username: true }
-    }
-  }
- }); 
+  include: { user: { select: { username: true, iconUrl: true } } }
+});
 
  const { user } = c.get('session') ?? {};
 if (!user?.userId) return c.redirect('/login');
@@ -190,20 +250,24 @@ const setting = await prisma.userRoomSetting.findFirst({
 // 判定用フラグ
 const notifyEnabled = !!(setting && setting.notify);
 
- const postList = posts.map(
-  (p) => `
-  <p><strong>${p.user.username}</strong> :
-  ${p.content}
-  <br/>
-  <small>${p.createdAt.toLocaleString()}</small>
+const postList = posts.map(
+  (p) => ` 
+  <p>
+    <strong>${p.user.username}</strong><br/>
+    <img src="${p.user.iconUrl || '/default-icon.png'}" alt="アイコン" width="40" height="40">
+    ${p.content || ''}<br/>
+   ${p.thumbnailUrl ? `<br><img src="${p.thumbnailUrl}" width="200" class="zoomable" data-full="${p.imageUrl}">` : ''}
+    <small>${new Date(p.createdAt).toLocaleString()}</small>
   </p>
   <hr/>
   `
- ).join('');
+).join('');
 
   return c.html(`
     <h1>${private.privateName} へようこそ！</h1>
-    <a href="/">トップページに戻る</a>
+    <a href="/privates/lists">プライベートルーム一覧に戻る</a>
+    <h4>説明: ${memo || 'なし'}</h4>
+    <h4>作成者: ${private.user.username}</h4>
     <form method="POST" action="/privates/${privateId}/invitation">
      <input type="text" name="username" placeholder="招待する人の名前">
      <button type="submit">招待する</button>
@@ -214,6 +278,10 @@ const notifyEnabled = !!(setting && setting.notify);
     ${notifyEnabled ? '🔔 通知オン' : '🔕 通知オフ'}
    </button>
     <script src="/notify.js"></script>
+     <form action="/privates/${privateId}/memo" method="post">
+  <textarea name="memo" rows="5" cols="40" maxlength="50" placeholder="ここに新しい説明"}></textarea>
+  <button type="submit">更新</button>
+   </form>
     <form method="POST" action="/privates/${privateId}/delete" onsubmit="return confirm('本当にこのプライベートルームを削除しますか？')">
       <button type="submit">このプライベートルームを削除する</button>
     </form>
@@ -221,12 +289,97 @@ const notifyEnabled = !!(setting && setting.notify);
       ${postList || '<p>投稿はまだありません</p>'}
     </div>
 
-    <form method="POST" action="/privates/${privateId}/posts">
-      <input type="text" name="content" required />
-      <button type="submit">投稿</button>
-    </form>
+  <form id="postForm">
+    <textarea name="content"></textarea>
+    <input type="file" name="icon" accept="image/*">
+    <button type="submit">投稿</button>
+  </form>
+
+  <script>
+  const loading = document.getElementById('loading');
+   const privateId = "${privateId}";
+    const form = document.getElementById('postForm');
+    const postListContainer = document.getElementById('postList');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const content = form.querySelector('textarea[name="content"]').value;
+      const fileInput = form.querySelector('input[name="icon"]');
+
+       let imageUrl = null;
+       let thumbnailUrl = null;
+
+         if (fileInput.files.length > 0) {
+        const formData = new FormData();
+       formData.append('icon', fileInput.files[0]);
+       const res = await fetch('/privates/uploads', { method: 'POST', body: formData });
+        const data = await res.json();
+       imageUrl = data.url;          
+       thumbnailUrl = data.thumbnail; 
+        }
+       console.log('Posting to /privates/' + privateId + '/posts', { content, imageUrl, thumbnailUrl });
+
+      const res = await fetch(\`/privates/${privateId}/posts\`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, imageUrl, thumbnailUrl }),
+      }); 
+
+    const posts = await res.json();
+
+      posts.forEach(post => {
+  const username = post.user?.username || '名無し';
+  const iconUrl = post.user?.iconUrl || '/default-icon.png';
+
+  const div = document.createElement('div');
+  div.innerHTML = \`
+    <p>
+      <strong>${posts.username}</strong><br/>
+      <img src="${posts.iconUrl}" width="40" height="40">
+      ${posts.content || ''}
+      ${posts.imageUrl ? `<br><img src="${posts.thumbnailUrl || posts.imageUrl}" width="200" class="zoomable" data-full="${posts.imageUrl}">` : ''}
+      <br>
+      <small>${new Date(posts.createdAt).toLocaleString()}</small>
+    </p>
+    <hr/>
+  \`;
+  postListContainer.prepend(div);
+});
+      form.reset();
+    });
+    
+// 画像クリックで拡大
+
+document.addEventListener('DOMContentLoaded', () => {
+  const imgModal = document.getElementById('imgModal');
+  const modalImg = document.getElementById('modalImg');
+
+  imgModal.addEventListener('click', () => { imgModal.style.display = 'none'; });
+
+  document.addEventListener('click', (e) => {
+    if (e.target.tagName === 'IMG' && e.target.classList.contains('zoomable')) {
+      modalImg.src = e.target.dataset.full || e.target.src;
+      imgModal.style.display = 'flex';
+    }
+  });
+});
+
+  </script>
+
+  <div id="imgModal" style="
+  display:none;
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.8);
+  justify-content:center;
+  align-items:center;
+  z-index:9999;
+">
+  <img id="modalImg" src="" style="max-width:90%; max-height:90%; border-radius:8px;">
+</div>
+
   `);
-  
 });
 
 // 通知オン／オフ切り替え
@@ -244,6 +397,39 @@ app.post('/:privateId/notify', async (c) => {
   });
 
   return c.json({ ok: true });
+});
+
+app.post('/:privateId/memo', async (c) => {
+  const { user } = c.get('session') ?? {};
+  const { privateId } = c.req.param();
+  const body = await c.req.parseBody();
+  const newMemo = body.memo;
+
+  if (!user?.userId) {
+    return c.text('ログインしてください', 401);
+  }
+
+  // ルームを取得
+  const room = await prisma.private.findUnique({
+    where: { privateId },
+  });
+
+  if (!room) {
+    return c.text('ルームが見つかりません', 404);
+  }
+
+  // 作成者以外の編集を禁止
+  if (room.createBy !== user.userId) {
+    return c.text('編集権限がありません', 403);
+  }
+
+  // メモ更新
+  await prisma.private.update({
+    where: { privateId },
+    data: { memo: newMemo },
+  });
+
+  return c.redirect(`/privates/${privateId}`);
 });
 
 module.exports = app;

@@ -10,11 +10,24 @@ app.get('/', async (c) => {
   const { user } = c.get('session') ?? {};
   if (!user?.userId) return c.redirect('/auth/google');
   
+  const MAX_NOTIFICATIONS = 50;
 
+  // 全通知（新しい順）を取得
   const notifications = await prisma.notification.findMany({
     where: { userId: user.userId },
     orderBy: { createdAt: 'desc' },
   });
+
+  // ★ 古い通知の削除処理
+  if (notifications.length > MAX_NOTIFICATIONS) {
+    const idsToDelete = notifications
+      .slice(MAX_NOTIFICATIONS) // 新しい100件以外を切り出す
+      .map(n => n.id);
+
+    await prisma.notification.deleteMany({
+      where: { id: { in: idsToDelete } },
+    });
+  }
 
 return c.html(`
   <h2>通知一覧</h2>

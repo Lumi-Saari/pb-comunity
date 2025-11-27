@@ -9,3 +9,14 @@ body {
 a{
   color: #00b7ff;
 }
+
+.replies {
+  margin-left: 50px;
+  margin-top: 5px;
+}
+.reply {
+  margin-bottom: 3px;
+}
+.zoomable {
+  cursor: pointer;
+}
