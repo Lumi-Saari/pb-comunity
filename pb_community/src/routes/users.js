@@ -43,7 +43,7 @@ users.get('/', async (c) => {
 
   // HTML
   const userList = allUsers.map(p => `
-    <p><h3><img src="${p.iconUrl || '/default-icon.png'}" alt="アイコン" width="50" height="50">
+    <p><h3><img src="${p.iconUrl || '/uploads/default.jpg'}" alt="アイコン" width="50" height="50">
     <strong>${p.username ?? '名無しユーザー'}</h3></strong></p>
     <p>活動場所: ${p.activityPlace ?? '未設定'}</p>
     <p>自己紹介: ${p.bio ?? '未設定'}</p>

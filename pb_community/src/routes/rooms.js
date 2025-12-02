@@ -200,7 +200,7 @@ const postList = posts.map(
   (p) => ` 
   <p>
     <strong>${p.user.username}</strong><br/>
-    <img src="${p.user.iconUrl || '/default-icon.png'}" alt="アイコン" width="40" height="40">
+    <img src="${p.user.iconUrl || '/uploads/default.jpg'}" alt="アイコン" width="40" height="40">
     ${p.content || ''} <br/>
     ${p.thumbnailUrl ? `<br><img src="${p.thumbnailUrl}" width="200" class="zoomable" data-full="${p.imageUrl}">` : ''}
     <small>${new Date(p.createdAt).toLocaleString()}</small>
@@ -273,21 +273,21 @@ return c.html(`
       const post = await res.json();
 
       // ここはクライアント側で動く
-      const div = document.createElement('div');
-      div.innerHTML = \`
-        <p>
-          <strong>${posts.username}</strong><br/>
-          <img src="${posts.iconUrl || '/default-icon.png'}" width="40" height="40">
-          ${posts.content || ''}
-          ${posts.imageUrl ? `<br><img src="${posts.thumbnailUrl || posts.imageUrl}" width="200" class="zoomable" data-full="${posts.imageUrl}"` : ''}
-          <br>
-          <small>${new Date(posts.createdAt).toLocaleString()}</small>
-        </p>
-        <hr/>
-      \`;
-     postListContainer.prepend(div);
+      const postHtml = \`
+      <p>
+        <strong>\${post.user.username}</strong><br/>
+        <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" alt="アイコン" width="40" height="40">
+        \${post.content || ''} <br/>
+        \${post.thumbnailUrl ? \`<br><img src="\${post.thumbnailUrl}" width="200" class="zoomable" data-full="\${post.imageUrl}">\` : ''}
+        <small>\${new Date(post.createdAt).toLocaleString()}</small>
+      </p>
+      <hr/>\`;
+
+      postListContainer.innerHTML = postHtml + postListContainer.innerHTML;
       form.reset();
     });
+
+
 
 // 画像クリックで拡大
 document.addEventListener('DOMContentLoaded', () => {

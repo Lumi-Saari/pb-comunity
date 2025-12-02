@@ -39,7 +39,7 @@ app.post('/rooms/:roomId/posts', async (c) => {
     return c.text("!不適切な言葉が含まれています!", 400);
   }
 
-  const post = await prisma.roomPost.create({
+  const post = await prisma.RoomPost.create({
     data: {
       roomId,
       userId: user.userId,
@@ -75,6 +75,7 @@ await Promise.all(
     })
   )
 );
+
 
   return c.json(post);
 });
@@ -154,36 +155,4 @@ await Promise.all(
 
 return c.json(post)
 });
-
-app.post('/privates/:postId/replies', async (c) => {
-  const { postId } = c.req.param();
-  const { user } = c.get('session') ?? {};
-  if (!user) return c.text('ログインが必要です', 401);
-
-  const body = await c.req.json();
-  const content = typeof body.content === 'string' ? body.content : null;
-  if (!content) return c.text('返信内容がありません', 400);
-
-  // 返信作成
-  const reply = await prisma.privatePostReply.create({
-    data: {
-      postId,
-      userId: user.userId,
-      content
-    },
-    include: {
-      user: {
-        select: {
-          username: true,
-          iconUrl: true
-        }
-      }
-    }
-  });
-
-  return c.json(reply);
-});
-
-
-
 module.exports = app;
