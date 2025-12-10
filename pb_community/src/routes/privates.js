@@ -6,20 +6,18 @@ const { randomUUID } = require('node:crypto');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient({ log: ['query'] });
 
+
 const app = new Hono();
 
 function privateTable(privates) {
   return html`
     <table>
-      <thead>
-        <tr><th>プライベートルーム名</th></tr>
-      </thead>
       <tbody>
         ${privates.map(
           (p) => html`
             <tr>
               <td>
-                <a href="/privates/${p.privateId}">${p.privateName}</a>
+                ・<a href="/privates/${p.privateId}">${p.privateName}</a>
               </td>
             </tr>
           `
@@ -255,8 +253,27 @@ const private = await prisma.private.findUnique({
  const posts = await prisma.privatePost.findMany({
   where: { privateId },
   orderBy: { createdAt: 'desc' },
-  include: { user: { select: { username: true, iconUrl: true } } }
+  select: {
+    postId: true,
+    parentId: true,
+    content: true,
+    createdAt: true,
+    imageUrl: true,
+    thumbnailUrl: true,
+    user: {
+      select: { username: true, iconUrl: true }
+    }
+  }
 });
+
+// 親投稿だけ
+const parents = posts.filter(p => p.parentId === null);
+
+const tree = parents.map(parent => ({
+  ...parent,
+  replies: posts.filter(p => p.parentId === parent.postId),
+  replyCount: posts.filter(p => p.parentId === parent.postId).length
+}));
 
  const { user } = c.get('session') ?? {};
 if (!user?.userId) return c.redirect('/login');
@@ -272,21 +289,61 @@ const setting = await prisma.userRoomSetting.findFirst({
 // 判定用フラグ
 const notifyEnabled = !!(setting && setting.notify);
 
-const postList = posts.map(
-  (p) => ` 
-  <p>
-    <strong>${p.user.username}</strong><br/>
-    <img src="${p.user.iconUrl || '/default-icon.png'}" alt="アイコン" width="40" height="40">
-    ${p.content || ''}<br/>
-   ${p.thumbnailUrl ? `<br><img src="${p.thumbnailUrl}" width="200" class="zoomable" data-full="${p.imageUrl}">` : ''}
-    <small>${new Date(p.createdAt).toLocaleString()}</small>
-  </p>
-  <hr/>
-  `
-).join('');
+const postList = tree.map((p) => `
+  <div class="post" data-postid="${p.postId}">
+    <p>
+      <strong>${p.user.username}</strong><br/>
+      <img src="${p.user.iconUrl || '/uploads/default.jpg'}" width="40">
+      ${p.content || ''}<br/>
+      ${p.thumbnailUrl ? `<img src="${p.thumbnailUrl}" width="200" class="zoomable" data-full="${p.imageUrl}">` : ''}
+      <small>${new Date(p.createdAt).toLocaleString()}</small>
+    </p>
+
+    <!-- 返信するボタン -->
+    <button class="reply-btn" data-parent="${p.postId}">返信</button>
+    
+
+    <!-- 返信一覧開閉ボタン（返信がある場合のみ） -->
+<div id="reply-count-${p.postId}" data-count="${p.replyCount}">
+  ${p.replyCount > 0 ? `
+      <button class="toggle-replies-btn" data-parent="${p.postId}">
+        ▼ ${p.replyCount}件の返信
+      </button>
+    ` : ''}
+</div>
+  
+
+    <!-- 返信フォーム -->
+    <form class="reply-form" data-parent="${p.postId}" style="display:none;">
+      <textarea name="content" rows="2" placeholder="返信を書く"></textarea>
+      <input type="file" name="icon" accept="image/*">
+      <button type="submit">送信</button>
+    </form>
+
+    <!-- 返信一覧（最初は非表示） -->
+    <div class="replies" data-parent="${p.postId}" style="display:none;">
+      ${
+        p.replies.map(r => `
+          <div class="reply">
+            <p>
+              <strong>${r.user.username}</strong><br/>
+              <img src="${r.user.iconUrl || '/uploads/default.jpg'}" width="40">
+              ${r.content}<br/>
+              ${r.thumbnailUrl ? `<img src="${r.thumbnailUrl}" width="200" class="zoomable" data-full="${r.imageUrl}">` : ''}
+              <small>${new Date(r.createdAt).toLocaleString()}</small>
+            </p>
+            <hr/>
+          </div>
+        `).join('')
+      }
+    </div>
+
+    <hr/>
+  </div>
+`).join('');
 
   return c.html(`
-    <h1>${private.privateName} へようこそ！</h1>
+    <h1>${private.privateName}</h1>
 
     <a href="/privates/lists">プライベートルーム一覧に戻る</a>
     <h4>説明: ${memo || 'なし'}</h4>
@@ -302,7 +359,7 @@ const postList = posts.map(
      <button type="submit">このプライベートルームから退出する</button>
      </form>
 
-     <button id="notify-btn"
+     <button id="notify-btn-private"
      data-private-id="${privateId}"
     data-notify="${notifyEnabled ? 'true' : 'false'}">
     ${notifyEnabled ? '🔔 通知オン' : '🔕 通知オフ'}
@@ -403,59 +460,172 @@ document.addEventListener('DOMContentLoaded', () => {
   <img id="modalImg" src="" style="max-width:90%; max-height:90%; border-radius:8px;">
 </div>
 
+<script>
+
+// 返信ボタンの開閉
+document.addEventListener('click', (e) => {
+  if (e.target.classList.contains('reply-btn')) {
+    const parentId = e.target.dataset.parent;
+    const form = document.querySelector(\`.reply-form[data-parent="\${parentId}"]\`);
+    if (form) {
+      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    }
+  }
+});
+
+// 返信一覧の開閉
+document.addEventListener('click', (e) => {
+  if (e.target.classList.contains('toggle-replies-btn')) {
+    const parentId = e.target.dataset.parent;
+    const repliesBox = document.querySelector(\`.replies[data-parent="\${parentId}"]\`);
+
+    if (!repliesBox) return;
+
+    if (repliesBox.style.display === 'none') {
+      repliesBox.style.display = 'block';
+      e.target.textContent = \`▲ 返信を隠す\`;
+    } else {
+      repliesBox.style.display = 'none';
+      e.target.textContent = \`▼ \${repliesBox.children.length}件の返信\`;
+    }
+  }
+});
+
+function ensureReplyToggleButton(parentId) {
+  const postEl = document.querySelector(\`.post[data-postid="\${parentId}"]\`);
+  if (!postEl) return;
+
+  // 既にボタンがあるなら作らない
+  if (postEl.querySelector(\`#reply-count-\${parentId}\`)) return;
+
+  // ボタンを作成
+  const btnHtml = \`
+    <button class="toggle-replies-btn" 
+            id="reply-count-\${parentId}" 
+            data-parent="\${parentId}" 
+            data-count="0">
+      ▼ 0件の返信
+    </button>
+  \`;
+
+  // 返信フォームの「直前」に挿入すると自然
+  const replyForm = postEl.querySelector(\`.reply-form[data-parent="\${parentId}"]\`);
+  replyForm.insertAdjacentHTML("beforebegin", btnHtml);
+}
+
+
+// 返信フォーム送信
+document.addEventListener('submit', async (e) => {
+  if (e.target.classList.contains('reply-form')) {
+    e.preventDefault();
+
+    const form = e.target;  // ← ここが一番重要
+    const parentId = form.dataset.parent;
+    const content = form.querySelector('textarea[name="content"]').value;
+    const fileInput = form.querySelector('input[name="icon"]');
+
+    let imageUrl = null;
+    let thumbnailUrl = null;
+
+    if (fileInput.files.length > 0) {
+      const fd = new FormData();
+      fd.append('icon', fileInput.files[0]);
+      const res = await fetch('/privates/uploads', { method: 'POST', body: fd });
+      const data = await res.json();
+      imageUrl = data.url;
+      thumbnailUrl = data.thumbnail;
+    }
+
+    const res = await fetch(\`/privates/${privateId}/replies\`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, parentId, imageUrl, thumbnailUrl }),
+    });
+
+    const reply = await res.json();
+
+    // 返信 HTML
+    const replyHtml = \`
+      <div class="reply">
+        <p>
+          <strong>\${reply.user.username}</strong><br/>
+          <img src="\${reply.user.iconUrl || '/uploads/default.jpg'}" width="40">
+          \${reply.content}<br/>
+          \${reply.thumbnailUrl ? \`<img src="\${reply.thumbnailUrl}" width="200" class="zoomable" data-full="\${reply.imageUrl}">\` : ''}
+          <small>\${new Date(reply.createdAt).toLocaleString()}</small>
+        </p>
+        <hr/>
+      </div>
+    \`;
+
+
+    // 親投稿の .replies に追加
+    const parentPost = document.querySelector(\`.post[data-postid="\${parentId}"] .replies\`);
+    if (parentPost) {
+      parentPost.insertAdjacentHTML('beforeend', replyHtml);
+    }
+
+    form.reset();
+    form.style.display = 'none';
+
+    // 返信カウント更新
+    const replyCountDiv = document.getElementById(\`reply-count-\${parentId}\`);
+    if (replyCountDiv) {
+      let count = parseInt(replyCountDiv.dataset.count, 10) || 0;
+      count += 1;
+      replyCountDiv.dataset.count = count.toString();
+
+      // ボタンテキスト更新
+      const toggleBtn = replyCountDiv.querySelector('.toggle-replies-btn');
+      if (toggleBtn) {
+        toggleBtn.textContent = \`▼ \${count}件の返信\`;
+      }
+    } else {
+      // まだボタンがなければ作成
+      ensureReplyToggleButton(parentId);
+    }
+  }
+}); 
+
+// SSE受信設定
+const evtSource = new EventSource(\`/privates/${privateId}/events\`);
+
+// 新規投稿受信
+
+evtSource.addEventListener('postCreated', (e) => {
+  const post = JSON.parse(e.data);
+
+  const postHtml = \`
+  <div class="post" data-postid="\${post.postId}">
+    <p>
+      <strong>\${post.user.username}</strong><br/>
+      <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" width="40">
+      \${post.content || ''}<br/>
+      \${post.thumbnailUrl ? \`<img src="\${post.thumbnailUrl}" class="zoomable" width="200" data-full="\${post.imageUrl}">\` : ''}
+      <small>\${new Date(post.createdAt).toLocaleString()}</small>
+    </p>
+
+    <button class="reply-btn" data-parent="\${post.postId}">返信</button>
+
+    <form class="reply-form" data-parent="\${post.postId}" style="display:none;">
+      <textarea name="content" rows="2" placeholder="返信を書く"></textarea>
+      <input type="file" name="icon" accept="image/*">
+      <button type="submit">送信</button>
+    </form>
+
+    <div class="replies" data-parent="\${post.postId}" style="display:none;"></div>
+    <hr/>
+  </div>
+  \`;
+
+  document.getElementById('postList')
+          .insertAdjacentHTML('afterbegin', postHtml);
+});
+
+</script>
+
   `);
 });
-
-app.post('/private/:roomId/posts/:postId/replies', async (c) => {
-  const { postId } = c.req.param();
-
-  const { user } = c.get('session') ?? {};
-  if (!user) return c.text('ログインが必要です', 401);
-
-  const body = await c.req.parseBody();
-  const content = body.content?.trim();
-  if (!content) return c.text('返信内容が空です', 400);
-
-  const reply = await prisma.privatePostReply.create({
-    data: {
-      postId,
-      userId: user.userId,
-      content,
-    },
-    include: {
-      user: {
-        select: {
-          username: true,
-          iconUrl: true,
-        }
-      }
-    }
-  });
-
-  return c.json(reply);
-});
-
-
-app.get('/privates/:privateId/posts/:postId/replies', async (c) => {
-  const { postId } = c.req.param();
-
-  const replies = await prisma.privatePostReply.findMany({
-    where: { postId },
-    orderBy: { createdAt: 'asc' },
-    include: {
-      user: {
-        select: {
-          username: true,
-          iconUrl: true,
-        }
-      }
-    }
-  });
-
-  return c.json(replies);
-});
-
-
 
 
 // 通知オン／オフ切り替え

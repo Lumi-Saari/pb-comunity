@@ -19,36 +19,21 @@ app.get('/', async (c) => {
         <a href="/account">アカウント管理</a>
       </div>
       <h2>メニュー</h2>
-      <div>
+     <div>
       <a href="/notifications" id="notif-link">
-    🔔 通知 <span id="notif-count"></span>
-  </a> 
-</div>
-
-<script>
-async function updateNotifCount() {
-  const res = await fetch('/notifications/count');
-  const data = await res.json();
-  const count = data.count || 0;
-
-  const countEl = document.getElementById('notif-count');
-  const linkEl = document.getElementById('notif-link');
-
-  // カウント表示
-  countEl.textContent = count > 0 ? '(' + count + ')' : '';
-
-  // ★ 一定数（例:10件）を超えたらリンクを非表示
-  if (count > 10) {
-    linkEl.style.display = 'none';
-  } else {
-    linkEl.style.display = ''; // 再表示可能にする
-  }
-}
-
-updateNotifCount();
-setInterval(updateNotifCount, 10000); // 10秒ごとに更新
-</script>
-
+      🔔 通知 <span id="notif-count"></span>
+      </a> 
+       <script>
+       async function updateNotifCount() {
+        const res = await fetch('/notifications/count');
+        const data = await res.json();
+        const el = document.getElementById('notif-count');
+        el.textContent = data.count > 0 ? '(' + data.count + ')' : '';
+       }
+      updateNotifCount();
+       setInterval(updateNotifCount, 10000); // 10秒ごとに更新
+      </script>
+      </div>
       </div>
       <div>
         <a href="/users">ユーザー一覧</a>

@@ -34,6 +34,10 @@ app.get('/', (c) => {
         <form method="get" action="/account/bio">
           <button type="submit">自己紹介を設定・変更する</button>
         </form>
+        <h3>ログアウト</h3>
+        <form method="get" action="/logout">
+          <button type="submit">ログアウト</button>
+        </form>
         <h3>アカウント削除</h3>
         <form method="post" action="/account/delete" onsubmit="return confirm('本当に退会しますか？')">
           <button type="submit">退会する</button>

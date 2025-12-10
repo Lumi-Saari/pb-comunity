@@ -28,8 +28,6 @@ model User {
   UserRoomSetting UserRoomSetting[]
   Notification    Notification[]
   iconUrl        String?
-  RoomPostReply   RoomPostReply[]
-  PrivatePostReply PrivatePostReply[]
   
   @@map(name: "users")
 }
@@ -96,9 +94,12 @@ model RoomPost {
   imageUrl     String?
   thumbnailUrl String?
 
+  parentId      String?
+  parent        RoomPost? @relation("Reply", fields: [parentId], references: [postId])
+  replies       RoomPost[] @relation("Reply") 
+
   room Room @relation(fields: [roomId], references: [roomId])
   user User @relation(fields: [userId], references: [userId])
-  replies   RoomPostReply[]
 }
 
 model PrivatePost {
@@ -111,33 +112,14 @@ model PrivatePost {
   imageUrl     String?  
   thumbnailUrl String? 
 
+  parentId      String?                          // ← 追加（返信先）
+  parent        PrivatePost? @relation("Reply", fields: [parentId], references: [postId])
+  replies       PrivatePost[] @relation("Reply") 
+
   private Private @relation(fields: [privateId], references: [privateId])
   user    User    @relation(fields: [userId], references: [userId])
-  replies     PrivatePostReply[]
 
   @@map("private_posts")
-}
-
-model RoomPostReply {
-  id        String   @id @default(cuid())
-  postId    String
-  userId    String
-  content   String
-  createdAt DateTime @default(now())
-
-  RoomPost  RoomPost @relation(fields: [postId], references: [postId])
-  user      User     @relation(fields: [userId], references: [userId])
-}
-
-model PrivatePostReply {
-  id        String    @id @default(cuid())
-  postId    String
-  userId    String
-  content   String
-  createdAt DateTime @default(now())
-
-  PrivatePost PrivatePost @relation(fields: [postId], references: [postId])
-  user        User        @relation(fields: [userId], references: [userId])
 }
 
 model UserRoomSetting {
