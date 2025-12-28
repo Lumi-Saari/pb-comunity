@@ -81,7 +81,7 @@ model PrivateMember {
   private Private @relation(fields: [privateId], references: [privateId])
   user User       @relation(fields: [userId], references: [userId])     
 
-  @@unique([privateId, userId])
+  @@unique([privateId, userId]).
 }
 
 model RoomPost {

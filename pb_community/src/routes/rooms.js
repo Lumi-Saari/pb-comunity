@@ -292,63 +292,148 @@ return c.html(`
     <button type="submit">投稿</button>
   </form>
 
+ <div id="imgModal" style="display:none;">
+    <img id="modalImg">
+  </div>
+
  <script>
   const loading = document.getElementById('loading');
    const roomId = "${roomId}";
     const form = document.getElementById('postForm');
     const postListContainer = document.getElementById('postList');
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
+    let pollingTimer = null;
 
-      const content = form.querySelector('textarea[name="content"]').value;
-      const fileInput = form.querySelector('input[name="icon"]');
+function startPolling() {
+  if (pollingTimer) return;
+  pollingTimer = setInterval(fetchPosts, 5000);
+}
 
-       let imageUrl = null;
-       let thumbnailUrl = null;
+function stopPolling() {
+  if (!pollingTimer) return;
+  clearInterval(pollingTimer);
+  pollingTimer = null;
+}
 
-         if (fileInput.files.length > 0) {
-        const formData = new FormData();
-       formData.append('icon', fileInput.files[0]);
-       const res = await fetch('/rooms/uploads', { method: 'POST', body: formData });
-        const data = await res.json();
-       imageUrl = data.url;          // 元画像
-       thumbnailUrl = data.thumbnail; // 一覧表示用軽量画像
+
+    function generatePostHTML(post) {
+    const replyCount = post.replies?.length || 0;
+  return \`
+    <div class="post" data-postid="\${post.postId}">
+      <p>
+        <strong>\${post.user.username}</strong><br/>
+        <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" width="40">
+        \${post.content || ''}<br/>
+
+        \${post.thumbnailUrl
+          ? \`<img src="\${post.thumbnailUrl}" width="200" class="zoomable" data-full="\${post.imageUrl}">\`
+          : ''}
+
+        <small>\${new Date(post.createdAt).toLocaleString()}</small>
+      </p>
+
+      <button class="reply-btn" data-parent="\${post.postId}">返信</button>
+
+      \${
+        replyCount > 0
+          ? \`
+            <button class="toggle-replies-btn"
+                    id="reply-count-\${post.postId}"
+                    data-parent="\${post.postId}"
+                    data-count="\${replyCount}">
+              ▼ \${replyCount}件の返信
+            </button>
+          \`
+          : ''
+      }
+
+      <form class="reply-form" data-parent="\${post.postId}" style="display:none;">
+        <textarea name="content" rows="2" placeholder="返信を書く"></textarea>
+        <input type="file" name="icon" accept="image/*">
+        <button type="submit">送信</button>
+      </form>
+      <hr/>
+
+      <div class="replies" data-parent="\${post.postId}" style="display:none;">
+         \${
+          post.replies && post.replies.length > 0
+            ? post.replies.map(r => \`
+                <div class="reply">
+                  <p>
+                    <strong>\${r.user.username}</strong><br/>
+                    <img src="\${r.user.iconUrl || '/uploads/default.jpg'}" width="40">
+                    \${r.content}<br/>
+                    \${r.thumbnailUrl
+                      ? \`<img src="\${r.thumbnailUrl}" width="200" class="zoomable" data-full="\${r.imageUrl}">\`
+                      : ''}
+                    <small>\${new Date(r.createdAt).toLocaleString()}</small>
+                  </p>
+                  <hr/>
+                </div>
+              \`).join('')
+            : ''
         }
-const res = await fetch(\`/rooms/${roomId}/posts\`, {
-        method: 'POST',
-           headers: { 'Content-Type': 'application/json' },
-           body: JSON.stringify({ content, imageUrl, thumbnailUrl }),
-      });
-
-      const post = await res.json();
-
-      const postHtml = \`
-      <div class="post" data-postid="\${post.postId}">
-        <p>
-          <strong>\${post.user.username}</strong><br/>
-          <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" width="40">
-          \${post.content || ''}<br/>
-          \${post.thumbnailUrl ? \`<img src="\${post.thumbnailUrl}" width="200" class="zoomable" data-full="\${post.imageUrl}">\` : ''}
-          <small>\${new Date(post.createdAt).toLocaleString()}</small>
-        </p>
-
-        <button class="reply-btn" data-parent="\${post.postId}">返信</button>
-
-        <form class="reply-form" data-parent="\${post.postId}" style="display:none;">
-          <textarea name="content" rows="2" placeholder="返信を書く"></textarea>
-          <input type="file" name="icon" accept="image/*">
-          <button type="submit">送信</button>
-        </form>
-
-        <div class="replies" data-parent="\${post.postId}" style="display:none;"></div>
-        <hr/>
       </div>
-      \`;
 
-      postListContainer.insertAdjacentHTML('afterbegin', postHtml);
-      form.reset();
-    }); 
+    </div>
+  \`;
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const content = form.querySelector('textarea[name="content"]').value;
+  const fileInput = form.querySelector('input[name="icon"]');
+
+  let imageUrl = null;
+  let thumbnailUrl = null;
+
+  if (fileInput.files.length > 0) {
+    const formData = new FormData();
+    formData.append('icon', fileInput.files[0]);
+    const res = await fetch('/rooms/uploads', { method: 'POST', body: formData });
+    const data = await res.json();
+    imageUrl = data.url;
+    thumbnailUrl = data.thumbnail;
+  }
+
+  await fetch(\`/rooms/${roomId}/posts\`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, imageUrl, thumbnailUrl }),
+  });
+
+
+  await fetchPosts();
+
+  form.reset();
+});
+
+   function renderAllPosts(posts) {
+  const container = document.getElementById('postList');
+  if (!container) return;
+
+  container.innerHTML = "";
+
+  posts.forEach(post => {
+    const postHtml = generatePostHTML(post);
+    container.insertAdjacentHTML('beforeend', postHtml);
+  });
+}
+
+    async function fetchPosts() {
+  try {
+    const res = await fetch(\`/rooms/${roomId}/posts\`);
+    const posts = await res.json();
+
+    renderAllPosts(posts);
+  } catch (err) {
+    console.error("Fetch failed:", err);
+  }
+}
+  fetchPosts();
+startPolling();
+
 
 
 // 画像クリックで拡大
@@ -367,7 +452,6 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
   </script>
-
   <div id="imgModal" style="
   display:none;
   position:fixed;
@@ -381,34 +465,48 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <script>
+let openReplyParentId = null;
 // 返信ボタンの開閉
 document.addEventListener('click', (e) => {
+
   if (e.target.classList.contains('reply-btn')) {
     const parentId = e.target.dataset.parent;
     const form = document.querySelector(\`.reply-form[data-parent="\${parentId}"]\`);
-    if (form) {
-      form.style.display = form.style.display === 'none' ? 'block' : 'none';
-    }
+    if (!form) return;
+
+    const willOpen = form.style.display === 'none';
+
+    form.style.display = willOpen ? 'block' : 'none';
+
+    // ★ ここを追加
+    openReplyParentId = willOpen ? parentId : null;
   }
+
 });
+
+
 
 // 返信一覧の開閉
 document.addEventListener('click', (e) => {
   if (e.target.classList.contains('toggle-replies-btn')) {
     const parentId = e.target.dataset.parent;
-    const repliesBox = document.querySelector(\`.replies[data-parent="\${parentId}"]\`);
+
+    const repliesBox = document.querySelector(
+      \`.replies[data-parent="\${parentId}"]\`
+    );
 
     if (!repliesBox) return;
 
-    if (repliesBox.style.display === 'none') {
-      repliesBox.style.display = 'block';
-      e.target.textContent = \`▲ 返信を隠す\`;
-    } else {
-      repliesBox.style.display = 'none';
-      e.target.textContent = \`▼ \${repliesBox.children.length}件の返信\`;
-    }
+    const willOpen = repliesBox.style.display === 'none';
+
+    repliesBox.style.display = willOpen ? 'block' : 'none';
+    e.target.textContent = willOpen
+      ? '▲ 返信を隠す'
+      : \`▼ \${repliesBox.children.length}件の返信\`;
   }
 });
+
+
 
 function ensureReplyToggleButton(parentId) {
   const postEl = document.querySelector(\`.post[data-postid="\${parentId}"]\`);
@@ -435,18 +533,19 @@ function ensureReplyToggleButton(parentId) {
 
 // 返信フォーム送信
 document.addEventListener('submit', async (e) => {
+
   if (e.target.classList.contains('reply-form')) {
     e.preventDefault();
 
     const form = e.target;  // ← ここが一番重要
-    const parentId = form.dataset.parent;
+    const parentId = e.target.dataset.parent
     const content = form.querySelector('textarea[name="content"]').value;
     const fileInput = form.querySelector('input[name="icon"]');
 
     let imageUrl = null;
     let thumbnailUrl = null;
 
-    if (fileInput.files.length > 0) {
+   if (fileInput.files.length > 0) {
       const fd = new FormData();
       fd.append('icon', fileInput.files[0]);
       const res = await fetch('/rooms/uploads', { method: 'POST', body: fd });
@@ -454,6 +553,7 @@ document.addEventListener('submit', async (e) => {
       imageUrl = data.url;
       thumbnailUrl = data.thumbnail;
     }
+      
 
     const res = await fetch(\`/rooms/${roomId}/replies\`, {
       method: 'POST',
@@ -464,6 +564,7 @@ document.addEventListener('submit', async (e) => {
     const reply = await res.json();
 
     // 返信 HTML
+
     const replyHtml = \`
       <div class="reply">
         <p>
@@ -477,73 +578,40 @@ document.addEventListener('submit', async (e) => {
       </div>
     \`;
 
-
     // 親投稿の .replies に追加
-    const parentPost = document.querySelector(\`.post[data-postid="\${parentId}"] .replies\`);
-    if (parentPost) {
-      parentPost.insertAdjacentHTML('beforeend', replyHtml);
-    }
+   const parentPost = document.querySelector(
+  \`.post[data-postid="\${parentId}"] .replies\`
+)
 
-    form.reset();
-    form.style.display = 'none';
+if (parentPost) {
+  parentPost.style.display = 'block';
+  parentPost.insertAdjacentHTML('beforeend', replyHtml);
+  ensureReplyToggleButton(parentId);
+}
 
-    // 返信カウント更新
-   const replyCountDiv = document.getElementById(\`reply-count-\${parentId}\`);
-if (replyCountDiv) {
-  let count = parseInt(replyCountDiv.dataset.count, 10) || 0;
+form.reset();
+form.style.display = 'none';
+openReplyParentId = null;
+
+
+const replyCountBtn = document.getElementById(\`reply-count-\${parentId}\`);
+
+if (replyCountBtn) {
+  let count = parseInt(replyCountBtn.dataset.count, 10) || 0;
   count += 1;
-  replyCountDiv.dataset.count = count.toString();
-
-  const toggleBtn = replyCountDiv.querySelector('.toggle-replies-btn');
-  if (toggleBtn) {
-    toggleBtn.textContent = \`▼ \${count}件の返信\`;
-  }
+  replyCountBtn.dataset.count = count.toString();
+  replyCountBtn.textContent = \`▼ \${count}件の返信\`;
 }
-  }
+
+fetchPosts();
 });
 
-// SSE受信設定
-const evtSource = new EventSource(\`/rooms/${roomId}/events\`);
 
-evtSource.addEventListener("replyCreated", (e) => {
-  const reply = JSON.parse(e.data);
-
-  const replyHtml = \`
-    <div class="reply">
-      <p>
-        <strong>\${reply.user.username}</strong><br/>
-        <img src="\${reply.user.iconUrl || '/uploads/default.jpg'}" width="40">
-        \${reply.content}<br/>
-        \${reply.thumbnailUrl ? \`<img src="\${reply.thumbnailUrl}" width="200" class="zoomable" data-full="\${reply.imageUrl}">\` : ''}
-        <small>\${new Date(reply.createdAt).toLocaleString()}</small>
-      </p>
-      <hr/>
-    </div>
-  \`;
-
-  const repliesBox = document.querySelector(
-    \`.post[data-postid="\${reply.parentId}"] .replies\`
-  );
-
-  if (repliesBox) {
-    repliesBox.insertAdjacentHTML("beforeend", replyHtml);
-  }
-
-  ensureReplyToggleButton(reply.parentId);
-
-  // ▼ 返信数のボタン更新
- const btn = document.getElementById(\`reply-count-\${reply.parentId}\`);
-if (btn) {
-  let count = parseInt(btn.dataset.count || "0", 10) + 1;
-  btn.dataset.count = count;
-  btn.textContent = \`▼ $\{count}件の返信\`;
-}
-});
-</script>る
+</script>
 
 `);
 
-})
+});
 
 
 
@@ -563,7 +631,6 @@ app.post('/:roomId/notify', async (c) => {
 
   return c.json({ ok: true });
 });
-
 app.post('/:roomId/memo', async (c) => {
   const { user } = c.get('session') ?? {};
   const { roomId } = c.req.param();

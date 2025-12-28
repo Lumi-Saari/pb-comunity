@@ -14,7 +14,7 @@ app.get('/', async (c) => {
     'PBerコミュニティ',
     html`
       <h1>PBerコミュニティ</h1>
-      <p>ようこそPBerコミュニティへ!</p>
+      <p>ようこそPBerコミュニティへ!コラボの相談や雑談など、ルールを守って使ってね！</p>
       <div>
         <a href="/account">アカウント管理</a>
       </div>

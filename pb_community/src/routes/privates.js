@@ -588,7 +588,9 @@ document.addEventListener('submit', async (e) => {
 }); 
 
 // SSE受信設定
+/*
 const evtSource = new EventSource(\`/privates/${privateId}/events\`);
+*/
 
 // 新規投稿受信
 

@@ -59,7 +59,12 @@ app.post('/rooms/:roomId/posts', async (c) => {
       user: {
         select: { username: true, iconUrl: true },
       },
+      replies: {
+      include: {
+        user: true,
+      },
     },
+   },
   });
 
   broadcast(roomId, "postCreated", {
@@ -90,7 +95,7 @@ await Promise.all(
       data: {
         userId: s.userId,
         message: `${user.username} さんが${room.roomName}に投稿しました`,
-        url: `/rooms/${roomId}#post-${post.id}`,
+        url: `/rooms/${roomId}#post-${post.postId}`,
       },
     })
   )
@@ -99,19 +104,48 @@ await Promise.all(
 return c.json(post)
 });
 
+app.get('/rooms/:roomId/posts', async (c) => {
+  const { roomId } = c.req.param();
+
+  const posts = await prisma.RoomPost.findMany({
+    where: {
+      roomId,
+      parentId: null,   // ← これが超重要
+    },
+    orderBy: { createdAt: 'asc' },
+    include: {
+  user: { select: { username: true, iconUrl: true } },
+  replies: {
+    orderBy: { createdAt: 'asc' },
+    include: {
+      user: { select: { username: true, iconUrl: true } },
+    },
+  },
+},
+
+  });
+
+  return c.json(posts);
+});
+
+
+/*
 app.get('/rooms/:roomId/events', (c) => {
   const { roomId } = c.req.param();
 
   return streamSSE(c, async (stream) => {
+    // 接続通知
+    stream.writeSSE({ event: "connected", data: "ok" });
+
     addStream(roomId, stream);
 
-    stream.onAbort(() => {
+    // 切断時クリーンアップ
+    c.req.raw.signal.addEventListener("abort", () => {
       removeStream(roomId, stream);
     });
-
-    stream.writeSSE({ event: "connected", data: "ok" });
   });
 });
+*/
 
 app.post('/rooms/:roomId/replies', async (c) => {
   const { user } = c.get('session') ?? {};
@@ -216,14 +250,33 @@ const payload = {
   }
 };
 
-console.log('[POST] created reply', payload);
 broadcast(roomId, "replyCreated", payload);
-
 
   return c.json(reply);
 });
 
- 
+ app.get('/rooms/:roomId/replies', async (c) => {
+  const { roomId } = c.req.param();
+
+  const reply = await prisma.RoomPost.findMany({
+    where: {
+      roomId,
+    },
+    orderBy: { createdAt: 'asc' },
+    include: {
+      user: {
+        select: { username: true, iconUrl: true },
+      },
+    },
+  });
+  
+  broadcast(roomId, {
+  event: "replyCreated",
+  data: reply
+});
+
+  return c.json(reply);
+});
 
 app.post('/privates/:privateId/posts', async (c) => {
   const { privateId } = c.req.param();
@@ -307,7 +360,7 @@ await Promise.all(
       data: {
         userId: s.userId,
         message: `${user.username} さんが${room.privateName}に投稿しました`,
-        url: `/privates/${privateId}#post-${post.id}`,
+        url: `/privates/${privateId}#post-${post.postId}`,
       },
     })
   )
