@@ -292,10 +292,6 @@ return c.html(`
     <button type="submit">投稿</button>
   </form>
 
- <div id="imgModal" style="display:none;">
-    <img id="modalImg">
-  </div>
-
  <script>
   const loading = document.getElementById('loading');
    const roomId = "${roomId}";
@@ -304,11 +300,10 @@ return c.html(`
 
     let pollingTimer = null;
 
-function startPolling() {
+ function startPolling() {
   if (pollingTimer) return;
   pollingTimer = setInterval(fetchPosts, 5000);
 }
-
 function stopPolling() {
   if (!pollingTimer) return;
   clearInterval(pollingTimer);
@@ -334,18 +329,15 @@ function stopPolling() {
 
       <button class="reply-btn" data-parent="\${post.postId}">返信</button>
 
-      \${
-        replyCount > 0
-          ? \`
-            <button class="toggle-replies-btn"
-                    id="reply-count-\${post.postId}"
-                    data-parent="\${post.postId}"
-                    data-count="\${replyCount}">
-              ▼ \${replyCount}件の返信
-            </button>
-          \`
-          : ''
-      }
+      const replyCount = post.replies.length;
+
+      \${replyCount > 0 ? \`
+  <button class="toggle-replies-btn"
+          data-parent="\${post.postId}">
+    ▼ \${replyCount}件の返信
+  </button>
+\` : ''}
+
 
       <form class="reply-form" data-parent="\${post.postId}" style="display:none;">
         <textarea name="content" rows="2" placeholder="返信を書く"></textarea>
@@ -409,19 +401,25 @@ form.addEventListener('submit', async (e) => {
   form.reset();
 });
 
-   function renderAllPosts(posts) {
+function renderAllPosts(posts) {
   const container = document.getElementById('postList');
-  if (!container) return;
-
-  container.innerHTML = "";
 
   posts.forEach(post => {
-    const postHtml = generatePostHTML(post);
-    container.insertAdjacentHTML('beforeend', postHtml);
+    const exists = container.querySelector(
+      \`.post[data-postid="\${post.postId}"]\`
+    );
+
+    if (!exists) {
+      container.insertAdjacentHTML(
+        'beforeend',
+        generatePostHTML(post)
+      );
+    }
   });
 }
 
-    async function fetchPosts() {
+
+async function fetchPosts() {
   try {
     const res = await fetch(\`/rooms/${roomId}/posts\`);
     const posts = await res.json();
@@ -431,6 +429,7 @@ form.addEventListener('submit', async (e) => {
     console.error("Fetch failed:", err);
   }
 }
+
   fetchPosts();
 startPolling();
 
@@ -465,6 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <script>
+
 let openReplyParentId = null;
 // 返信ボタンの開閉
 document.addEventListener('click', (e) => {
@@ -487,49 +487,47 @@ document.addEventListener('click', (e) => {
 
 
 // 返信一覧の開閉
-document.addEventListener('click', (e) => {
-  if (e.target.classList.contains('toggle-replies-btn')) {
-    const parentId = e.target.dataset.parent;
+const openReplies = new Set();
 
+document.addEventListener('click', (e) => {
+  if (!e.target.classList.contains('toggle-replies-btn')) return;
+
+  const parentId = e.target.dataset.parent;
+  const repliesBox = document.querySelector(
+    \`.replies[data-parent="\${parentId}"]\`
+  );
+  if (!repliesBox) return;
+
+  const willOpen = repliesBox.style.display === 'none';
+
+  repliesBox.style.display = willOpen ? 'block' : 'none';
+
+  if (willOpen) {
+    openReplies.add(parentId);
+  } else {
+    openReplies.delete(parentId);
+  }
+
+  e.target.textContent = willOpen
+    ? '▲ 返信を隠す'
+    : \`▼ \${repliesBox.children.length}件の返信\`;
+});
+
+function restoreOpenReplies() {
+  openReplies.forEach(parentId => {
     const repliesBox = document.querySelector(
       \`.replies[data-parent="\${parentId}"]\`
     );
+    const btn = document.querySelector(
+      \`.toggle-replies-btn[data-parent="\${parentId}"]\`
+    );
 
-    if (!repliesBox) return;
+    if (!repliesBox || !btn) return;
 
-    const willOpen = repliesBox.style.display === 'none';
-
-    repliesBox.style.display = willOpen ? 'block' : 'none';
-    e.target.textContent = willOpen
-      ? '▲ 返信を隠す'
-      : \`▼ \${repliesBox.children.length}件の返信\`;
-  }
-});
-
-
-
-function ensureReplyToggleButton(parentId) {
-  const postEl = document.querySelector(\`.post[data-postid="\${parentId}"]\`);
-  if (!postEl) return;
-
-  // 既にボタンがあるなら作らない
-  if (postEl.querySelector(\`#reply-count-\${parentId}\`)) return;
-
-  // ボタンを作成
-  const btnHtml = \`
-    <button class="toggle-replies-btn" 
-            id="reply-count-\${parentId}" 
-            data-parent="\${parentId}" 
-            data-count="0">
-      ▼ 0件の返信
-    </button>
-  \`;
-
-  // 返信フォームの「直前」に挿入すると自然
-  const replyForm = postEl.querySelector(\`.reply-form[data-parent="\${parentId}"]\`);
-  replyForm.insertAdjacentHTML("beforebegin", btnHtml);
+    repliesBox.style.display = 'block';
+    btn.textContent = '▲ 返信を隠す';
+  });
 }
-
 
 // 返信フォーム送信
 document.addEventListener('submit', async (e) => {
@@ -585,30 +583,24 @@ document.addEventListener('submit', async (e) => {
 
 if (parentPost) {
   parentPost.style.display = 'block';
-  parentPost.insertAdjacentHTML('beforeend', replyHtml);
-  ensureReplyToggleButton(parentId);
-}
+ // parentPost.insertAdjacentHTML('beforeend', replyHtml);
+
+  // 初めて返信がついた場合だけボタン生成
+  const postEl = document.querySelector(
+    \`.post[data-postid="\${parentId}"]\`
+  );
+
+  const existingBtn = postEl.querySelector(
+    \`.toggle-replies-btn[data-parent="\${parentId}"]\`
+  );
 
 form.reset();
 form.style.display = 'none';
 openReplyParentId = null;
 
-
-const replyCountBtn = document.getElementById(\`reply-count-\${parentId}\`);
-
-if (replyCountBtn) {
-  let count = parseInt(replyCountBtn.dataset.count, 10) || 0;
-  count += 1;
-  replyCountBtn.dataset.count = count.toString();
-  replyCountBtn.textContent = \`▼ \${count}件の返信\`;
-}
-
 fetchPosts();
 });
-
-
 </script>
-
 `);
 
 });
