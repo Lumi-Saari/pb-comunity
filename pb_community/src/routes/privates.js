@@ -430,6 +430,7 @@ const postList = tree.map((p) => `
       postListContainer.innerHTML = postHtml + postListContainer.innerHTML;
       form.reset();
     });
+    
 // 画像クリックで拡大
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -475,19 +476,24 @@ document.addEventListener('click', (e) => {
 
 // 返信一覧の開閉
 document.addEventListener('click', (e) => {
-  if (e.target.classList.contains('toggle-replies-btn')) {
-    const parentId = e.target.dataset.parent;
-    const repliesBox = document.querySelector(\`.replies[data-parent="\${parentId}"]\`);
+  const btn = e.target.closest('.toggle-replies-btn');
+  if (!btn) return;
+  if (btn.classList.contains('toggle-replies-btn')) {
+    const parentId = btn.dataset.parent;
+    const postEl = document.querySelector(\`.post[data-postid="\${parentId}"]\`);
+    if (!postEl) return;
 
+    const repliesBox = postEl.querySelector('.replies');
     if (!repliesBox) return;
 
-    if (repliesBox.style.display === 'none') {
-      repliesBox.style.display = 'block';
-      e.target.textContent = \`▲ 返信を隠す\`;
-    } else {
-      repliesBox.style.display = 'none';
-      e.target.textContent = \`▼ \${repliesBox.children.length}件の返信\`;
-    }
+    const isHidden = repliesBox.style.display === 'none' ||
+    getComputedStyle(repliesBox).display === 'none'
+    ;
+    
+    repliesBox.style.display = isHidden ? 'block' : 'none';
+    btn.textContent = isHidden
+      ? '▲ 返信を隠す'
+      : \`▼ \${repliesBox.children.length}件の返信\`;
   }
 });
 
@@ -511,8 +517,10 @@ function ensureReplyToggleButton(parentId) {
   // 返信フォームの「直前」に挿入すると自然
   const replyForm = postEl.querySelector(\`.reply-form[data-parent="\${parentId}"]\`);
   replyForm.insertAdjacentHTML("beforebegin", btnHtml);
+  
+  if (!replyForm) return;
+  replyForm.insertAdjacentHTML('beforebegin', btnHtml);
 }
-
 
 // 返信フォーム送信
 document.addEventListener('submit', async (e) => {

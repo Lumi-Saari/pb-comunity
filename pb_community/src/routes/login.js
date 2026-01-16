@@ -20,6 +20,9 @@ app.get('/', (c) => {
          <input id="rules" type="checkbox" required />
           <label for="rules">喧嘩をしないなどのコミュニティガイドラインを遵守します。</label>
           <br />
+          <input id="age" type="checkbox" required />
+          <label for="age">13歳以上です。</label>
+          <br />
           <button type="submit">Googleでログイン</button>
         </form>
       `,

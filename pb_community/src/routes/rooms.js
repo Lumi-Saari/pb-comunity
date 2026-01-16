@@ -170,20 +170,35 @@ app.get('/:roomId', async (c) => {
   if (!room) return c.text('ルームが存在しません', 404);
 
 const posts = await prisma.roomPost.findMany({
-  where: { roomId },
+  where: {
+    roomId,
+    parentId: null, 
+  },
   orderBy: { createdAt: 'desc' },
   select: {
     postId: true,
-    parentId: true,
     content: true,
     createdAt: true,
     imageUrl: true,
     thumbnailUrl: true,
     user: {
-      select: { username: true, iconUrl: true }
-    }
-  }
+      select: { username: true, iconUrl: true },
+    },
+    replies: {
+      orderBy: { createdAt: 'asc' },
+      select: {
+        postId: true,
+        parentId: true,
+        content: true,
+        createdAt: true,
+        user: {
+          select: { username: true, iconUrl: true },
+        },
+      },
+    },
+  },
 });
+
 
 // 親投稿だけ
 const parents = posts.filter(p => p.parentId === null);
@@ -210,6 +225,13 @@ const notifyEnabled = !!(setting && setting.notify);
 
 
 const postList = tree.map((p) => `
+<style>
+hr.end {
+  border: none;
+  border-top: 1px solid black;
+}
+</style>
+
   <div class="post" data-postid="${p.postId}">
     <p>
       <strong>${p.user.username}</strong><br/>
@@ -230,7 +252,6 @@ const postList = tree.map((p) => `
       </button>
     ` : ''}
 </div>
-  
 
     <!-- 返信フォーム -->
     <form class="reply-form" data-parent="${p.postId}" style="display:none;">
@@ -244,6 +265,7 @@ const postList = tree.map((p) => `
       ${
         p.replies.map(r => `
           <div class="reply">
+             <hr/>
             <p>
               <strong>${r.user.username}</strong><br/>
               <img src="${r.user.iconUrl || '/uploads/default.jpg'}" width="40">
@@ -251,13 +273,11 @@ const postList = tree.map((p) => `
               ${r.thumbnailUrl ? `<img src="${r.thumbnailUrl}" width="200" class="zoomable" data-full="${r.imageUrl}">` : ''}
               <small>${new Date(r.createdAt).toLocaleString()}</small>
             </p>
-            <hr/>
           </div>
         `).join('')
       }
     </div>
-
-    <hr/>
+   <hr class="end"/>
   </div>
 `).join('');
 
@@ -282,15 +302,27 @@ return c.html(`
     <button type="submit">このルームを削除する</button>
   </form>
 
-  <div id="postList">
-    ${postList || '<p>投稿はまだありません</p>'}
-  </div>
+<div id="postList">
+  ${
+    posts.length === 0
+      ? '<p>投稿はまだありません</p>'
+      : postList
+  }
+</div>
 
   <form id="postForm">
     <textarea name="content"></textarea>
     <input type="file" name="icon" accept="image/*">
     <button type="submit">投稿</button>
   </form>
+
+  <style>
+hr.end {
+  border: none;
+  border-top: 1px solid black;
+}
+</style>
+
 
  <script>
   const loading = document.getElementById('loading');
@@ -309,10 +341,9 @@ function stopPolling() {
   clearInterval(pollingTimer);
   pollingTimer = null;
 }
+function generatePostHTML(post) {
+  const replyCount = post.replies?.length || 0;
 
-
-    function generatePostHTML(post) {
-    const replyCount = post.replies?.length || 0;
   return \`
     <div class="post" data-postid="\${post.postId}">
       <p>
@@ -324,49 +355,27 @@ function stopPolling() {
           ? \`<img src="\${post.thumbnailUrl}" width="200" class="zoomable" data-full="\${post.imageUrl}">\`
           : ''}
 
-        <small>\${new Date(post.createdAt).toLocaleString()}</small>
+        <small>$\{new Date(post.createdAt).toLocaleString()}</small>
       </p>
 
-      <button class="reply-btn" data-parent="\${post.postId}">返信</button>
-
-      const replyCount = post.replies.length;
+      <button class="reply-btn" data-parent="\${String(post.postId)}">返信</button>
 
       \${replyCount > 0 ? \`
-  <button class="toggle-replies-btn"
-          data-parent="\${post.postId}">
-    ▼ \${replyCount}件の返信
-  </button>
-\` : ''}
+        <button class="toggle-replies-btn" data-parent="\${String(post.postId)}">
+          ▼ \${replyCount}件の返信
+        </button>
+      \` : ''}
 
-
-      <form class="reply-form" data-parent="\${post.postId}" style="display:none;">
-        <textarea name="content" rows="2" placeholder="返信を書く"></textarea>
-        <input type="file" name="icon" accept="image/*">
+      <form class="reply-form" data-parent="\${String(post.postId)}" style="display:none;">
+        <textarea name="content" rows="2"></textarea>
+        <input type="file" name="icon">
         <button type="submit">送信</button>
       </form>
-      <hr/>
-
-      <div class="replies" data-parent="\${post.postId}" style="display:none;">
-         \${
-          post.replies && post.replies.length > 0
-            ? post.replies.map(r => \`
-                <div class="reply">
-                  <p>
-                    <strong>\${r.user.username}</strong><br/>
-                    <img src="\${r.user.iconUrl || '/uploads/default.jpg'}" width="40">
-                    \${r.content}<br/>
-                    \${r.thumbnailUrl
-                      ? \`<img src="\${r.thumbnailUrl}" width="200" class="zoomable" data-full="\${r.imageUrl}">\`
-                      : ''}
-                    <small>\${new Date(r.createdAt).toLocaleString()}</small>
-                  </p>
-                  <hr/>
-                </div>
-              \`).join('')
-            : ''
-        }
-      </div>
-
+      <div class="replies"
+       data-parent="\${post.postId}"
+       style="display:none">
+  </div>
+      <hr class="end"/>
     </div>
   \`;
 }
@@ -405,19 +414,69 @@ function renderAllPosts(posts) {
   const container = document.getElementById('postList');
 
   posts.forEach(post => {
-    const exists = container.querySelector(
+    if (post.parentId) return;
+
+    let postEl = container.querySelector(
       \`.post[data-postid="\${post.postId}"]\`
     );
 
-    if (!exists) {
-      container.insertAdjacentHTML(
-        'beforeend',
-        generatePostHTML(post)
+    if (!postEl) {
+      container.insertAdjacentHTML('beforeend', generatePostHTML(post));
+      postEl = container.querySelector(
+        \`.post[data-postid="\${post.postId}"]\`
       );
     }
-  });
+
+    const repliesBox = postEl.querySelector(
+      \`.replies[data-parent="\${String(post.postId)}"]\`
+      );
+
+    if (!repliesBox) return;
+    let toggleBtn = postEl.querySelector(
+      \`.toggle-replies-btn[data-parent="\${post.postId}"]\`
+    );
+
+if (!toggleBtn && post.replies.length > 0) {
+  postEl.querySelector('.reply-btn').insertAdjacentHTML(
+    'afterend',
+    \`
+    <button class="toggle-replies-btn" data-parent="\${post.postId}">
+      ▼ \${post.replies.length}件の返信
+    </button>
+    \`
+  );
+
+  toggleBtn = postEl.querySelector(
+    \`.toggle-replies-btn[data-parent="\${post.postId}"]\`
+  );
 }
 
+if (toggleBtn) {
+  toggleBtn.textContent = openReplies.has(String(post.postId))
+    ? '▲ 返信を隠す'
+    : \`▼ \${post.replies.length}件の返信\`;
+}
+
+
+// 中身だけ更新する（.replies 自体は作り直さない）
+repliesBox.innerHTML = post.replies.map(r => \`
+  <div class="reply">
+    <hr/>
+    <p>
+      <strong>\${r.user.username}</strong><br/>
+      <img src="\${r.user.iconUrl || '/uploads/default.jpg'}" width="40">
+      \${r.content}<br/>
+      \${r.thumbnailUrl
+        ? \`<img src="\${r.thumbnailUrl}" width="200" class="zoomable" data-full="\${r.imageUrl}">\`
+        : ''}
+      <small>\${new Date(r.createdAt).toLocaleString()}</small>
+    </p>
+  </div>
+\`).join('');
+
+  });
+  restoreOpenReplies();
+}
 
 async function fetchPosts() {
   try {
@@ -465,77 +524,76 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <script>
 
-let openReplyParentId = null;
-// 返信ボタンの開閉
+
+
 document.addEventListener('click', (e) => {
+  if (!e.target.classList.contains('reply-btn')) return;
 
-  if (e.target.classList.contains('reply-btn')) {
-    const parentId = e.target.dataset.parent;
-    const form = document.querySelector(\`.reply-form[data-parent="\${parentId}"]\`);
-    if (!form) return;
+  const parentId = e.target.dataset.parent;
+  const form = document.querySelector(
+    \`.reply-form[data-parent="\${String(parentId)}"]\`
+  );
+  if (!form) return;
 
-    const willOpen = form.style.display === 'none';
+  const willOpen =
+    form.style.display === 'none' ||
+    getComputedStyle(form).display === 'none';
 
-    form.style.display = willOpen ? 'block' : 'none';
-
-    // ★ ここを追加
-    openReplyParentId = willOpen ? parentId : null;
-  }
-
+  form.style.display = willOpen ? 'block' : 'none';
 });
 
 
 
 // 返信一覧の開閉
 const openReplies = new Set();
-
 document.addEventListener('click', (e) => {
-  if (!e.target.classList.contains('toggle-replies-btn')) return;
+  const btn = e.target.closest('.toggle-replies-btn');
+  if (!btn) return;
 
-  const parentId = e.target.dataset.parent;
+  const parentId = String(btn.dataset.parent);
   const repliesBox = document.querySelector(
     \`.replies[data-parent="\${parentId}"]\`
   );
   if (!repliesBox) return;
 
-  const willOpen = repliesBox.style.display === 'none';
+  const isHidden =
+    repliesBox.style.display === 'none' ||
+    getComputedStyle(repliesBox).display === 'none';
 
-  repliesBox.style.display = willOpen ? 'block' : 'none';
+  repliesBox.style.display = isHidden ? 'block' : 'none';
 
-  if (willOpen) {
+  if (isHidden) {
     openReplies.add(parentId);
+    btn.textContent = '▲ 返信を隠す';
   } else {
     openReplies.delete(parentId);
+    const count = repliesBox.querySelectorAll('.reply').length;
+    btn.textContent = \`▼ \${count}件の返信\`;
   }
-
-  e.target.textContent = willOpen
-    ? '▲ 返信を隠す'
-    : \`▼ \${repliesBox.children.length}件の返信\`;
 });
-
 function restoreOpenReplies() {
-  openReplies.forEach(parentId => {
+  openReplies.forEach((parentId) => {
     const repliesBox = document.querySelector(
       \`.replies[data-parent="\${parentId}"]\`
     );
-    const btn = document.querySelector(
+    const toggleBtn = document.querySelector(
       \`.toggle-replies-btn[data-parent="\${parentId}"]\`
     );
-
-    if (!repliesBox || !btn) return;
-
-    repliesBox.style.display = 'block';
-    btn.textContent = '▲ 返信を隠す';
+    if (repliesBox && toggleBtn) {
+      repliesBox.style.display = 'block';
+      toggleBtn.textContent = '▲ 返信を隠す';
+    }
   });
 }
 
-// 返信フォーム送信
+// 返信フォームの送信処理
+
 document.addEventListener('submit', async (e) => {
 
   if (e.target.classList.contains('reply-form')) {
     e.preventDefault();
 
-    const form = e.target;  // ← ここが一番重要
+    const form = e.target;
     const parentId = e.target.dataset.parent
     const content = form.querySelector('textarea[name="content"]').value;
     const fileInput = form.querySelector('input[name="icon"]');
@@ -550,8 +608,7 @@ document.addEventListener('submit', async (e) => {
       const data = await res.json();
       imageUrl = data.url;
       thumbnailUrl = data.thumbnail;
-    }
-      
+    } 
 
     const res = await fetch(\`/rooms/${roomId}/replies\`, {
       method: 'POST',
@@ -561,10 +618,9 @@ document.addEventListener('submit', async (e) => {
 
     const reply = await res.json();
 
-    // 返信 HTML
-
     const replyHtml = \`
       <div class="reply">
+       <hr/>
         <p>
           <strong>\${reply.user.username}</strong><br/>
           <img src="\${reply.user.iconUrl || '/uploads/default.jpg'}" width="40">
@@ -572,33 +628,41 @@ document.addEventListener('submit', async (e) => {
           \${reply.thumbnailUrl ? \`<img src="\${reply.thumbnailUrl}" width="200" class="zoomable" data-full="\${reply.imageUrl}">\` : ''}
           <small>\${new Date(reply.createdAt).toLocaleString()}</small>
         </p>
-        <hr/>
       </div>
     \`;
 
-    // 親投稿の .replies に追加
    const parentPost = document.querySelector(
   \`.post[data-postid="\${parentId}"] .replies\`
 )
 
 if (parentPost) {
   parentPost.style.display = 'block';
- // parentPost.insertAdjacentHTML('beforeend', replyHtml);
 
-  // 初めて返信がついた場合だけボタン生成
   const postEl = document.querySelector(
     \`.post[data-postid="\${parentId}"]\`
   );
 
   const existingBtn = postEl.querySelector(
-    \`.toggle-replies-btn[data-parent="\${parentId}"]\`
+    \`.toggle-replies-btn[data-parent="\${String(parentId)}"]\`
   );
-
+openReplies.add(String(parentId));
+await fetchPosts();
+}
+  
 form.reset();
 form.style.display = 'none';
-openReplyParentId = null;
 
-fetchPosts();
+async function fetchPosts() {
+  const res = await fetch(\`/rooms/${roomId}/posts\`);
+  const posts = await res.json();
+
+  console.log(
+    posts.find(p => p.postId === parentId)
+  );
+
+  renderAllPosts(posts);
+}
+}
 });
 </script>
 `);
