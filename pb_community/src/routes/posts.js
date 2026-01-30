@@ -1,5 +1,4 @@
 const { Hono } = require('hono');
-
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient({ log: ['query']});
 const { streamSSE } = require('hono/streaming');
@@ -8,7 +7,7 @@ const { broadcast } = require('../utils/eventStream');
 
 const app = new Hono();
 
-app.post('/rooms/:roomId/posts', async (c) => {
+app.post('/:roomId/posts', async (c) => {
   const { roomId } = c.req.param();
 
   const { user } = c.get('session') ?? {};
@@ -47,31 +46,33 @@ app.post('/rooms/:roomId/posts', async (c) => {
   select: { roomName: true },
  });
 
-  const post = await prisma.RoomPost.create({
-    data: {
+ const post = await prisma.RoomPost.create({
+  data: {
        roomId,
        userId: user.userId,
        content,
        imageUrl,
        thumbnailUrl,
 },
-    include: {
+include: {
       user: {
-        select: { username: true, iconUrl: true },
+        select: { username: true, iconUrl: true, isAdmin: true },
       },
       replies: {
       include: {
-        user: true,
+        user: { select: { username: true, iconUrl: true, isAdmin: true } },
       },
     },
    },
-  });
+});
+
 
   broadcast(roomId, "postCreated", {
   postId: post.postId,
   user: {
     username: post.user.username,
     iconUrl: post.user.iconUrl,
+    isAdmin: post.user.isAdmin,
   },
   content: post.content,
   imageUrl: post.imageUrl,
@@ -104,21 +105,22 @@ await Promise.all(
 return c.json(post)
 });
 
-app.get('/rooms/:roomId/posts', async (c) => {
+app.get('/:roomId/posts', async (c) => {
   const { roomId } = c.req.param();
 
   const posts = await prisma.RoomPost.findMany({
     where: {
       roomId,
-      parentId: null,   // ← これが超重要
+      parentId: null,
+      isDeleted: false,
     },
     orderBy: { createdAt: 'asc' },
     include: {
-  user: { select: { username: true, iconUrl: true } },
+  user: { select: { username: true, iconUrl: true, isAdmin: true } },
   replies: {
     orderBy: { createdAt: 'asc' },
     include: {
-      user: { select: { username: true, iconUrl: true } },
+      user: { select: { username: true, iconUrl: true, isAdmin: true } },
     },
   },
 },
@@ -128,26 +130,7 @@ app.get('/rooms/:roomId/posts', async (c) => {
   return c.json(posts);
 });
 
-
-/*
-app.get('/rooms/:roomId/events', (c) => {
-  const { roomId } = c.req.param();
-
-  return streamSSE(c, async (stream) => {
-    // 接続通知
-    stream.writeSSE({ event: "connected", data: "ok" });
-
-    addStream(roomId, stream);
-
-    // 切断時クリーンアップ
-    c.req.raw.signal.addEventListener("abort", () => {
-      removeStream(roomId, stream);
-    });
-  });
-});
-*/
-
-app.post('/rooms/:roomId/replies', async (c) => {
+app.post('/:roomId/replies', async (c) => {
   const { user } = c.get('session') ?? {};
   if (!user?.userId) return c.text('ログインが必要です', 401);
 
@@ -157,7 +140,7 @@ app.post('/rooms/:roomId/replies', async (c) => {
   if (!parentId) return c.text('parentId が必要です', 400);
 
   // parentId を postId として検索
-  const parent = await prisma.roomPost.findUnique({ where: { postId: parentId } });
+  const parent = await prisma.RoomPost.findUnique({ where: { postId: parentId } });
   if (!parent) return c.text('返信先の投稿が見つかりません', 404);
 
     // NGワードチェック（ここで content を使う）
@@ -189,12 +172,12 @@ app.post('/rooms/:roomId/replies', async (c) => {
     thumbnailUrl,
   },
   include: {
-    user: { select: { username: true, iconUrl: true } },
+    user: { select: { username: true, iconUrl: true, isAdmin: true } },
   },
 });
 
 const post = await prisma.RoomPost.findUnique({
-  where: { postId: parentId },
+  where: { postId: parentId, isDeleted: false },
   select: { content: true },
 });
 
@@ -208,6 +191,7 @@ broadcast(roomId, "replyCreated", {
   user: {
     username: reply.user.username,
     iconUrl: reply.user.iconUrl,
+    isAdmin: reply.user.isAdmin,
   },
 });
 
@@ -246,7 +230,8 @@ const payload = {
   createdAt: reply.createdAt,
   user: {
     username: reply.user.username,
-    iconUrl: reply.user.iconUrl
+    iconUrl: reply.user.iconUrl,
+    isAdmin: reply.user.isAdmin,
   }
 };
 
@@ -255,12 +240,13 @@ broadcast(roomId, "replyCreated", payload);
   return c.json(reply);
 });
 
- app.get('/rooms/:roomId/replies', async (c) => {
+ app.get('/:roomId/replies', async (c) => {
   const { roomId } = c.req.param();
 
   const reply = await prisma.RoomPost.findMany({
     where: {
       roomId,
+      isDeleted: false,
     },
     orderBy: { createdAt: 'asc' },
     include: {
@@ -278,12 +264,47 @@ broadcast(roomId, "replyCreated", payload);
   return c.json(reply);
 });
 
-app.post('/privates/:privateId/posts', async (c) => {
-  const { privateId } = c.req.param();
-
+app.delete('/:roomId/posts/:postId', async (c) => {
+  const { postId } = c.req.param();
   const { user } = c.get('session') ?? {};
   if (!user) return c.text('ログインが必要です', 401);
 
+  const existingUser = await prisma.user.findUnique({ where: { userId: user.userId } });
+  if (!existingUser || !existingUser.isAdmin) {
+    return c.text('管理者権限が必要です', 403);
+  }
+
+  const post = await prisma.RoomPost.findUnique({ where: { postId } });
+  if (!post) {
+    return c.text('投稿が見つかりません', 404);
+  }
+
+  await prisma.RoomPost.update({
+    where: { postId },
+    data: { isDeleted: true },
+  });
+
+
+  // 投稿者に通知を送る
+
+  await prisma.notification.create({
+    data: {
+      userId: post.userId,
+      message: `あなたの投稿が管理者によって削除されました`,
+      url: `/rooms/${post.roomId}`,
+    },
+  })
+
+  return c.json({ ok: true });
+});
+
+
+app.post('/:privateId/posts', async (c) => {
+  const { privateId } = c.req.param();
+
+ const { user } = c.get('session') ?? {};
+  if (!user) return c.text('ログインが必要です', 401);
+  
   const existingUser = await prisma.user.findUnique({ where: { userId: user.userId } });
   if (!existingUser) return c.text('ユーザーが存在しません', 400);
 
@@ -312,7 +333,12 @@ app.post('/privates/:privateId/posts', async (c) => {
     return c.text("!不適切な言葉が含まれています!", 400);
   }
 
-  const post = await prisma.privatePost.create({
+  const private = await prisma.private.findUnique({ 
+  where: { privateId },
+  select: { privateName: true },
+ });
+
+  const post = await prisma.PrivatePost.create({
     data: {
        privateId,
        userId: user.userId,
@@ -322,15 +348,15 @@ app.post('/privates/:privateId/posts', async (c) => {
 },
     include: {
       user: {
-        select: { username: true, iconUrl: true },
+        select: { username: true, iconUrl: true, isAdmin: true },
+      },
+      replies: {
+      include: {
+        user: { select: { username: true, iconUrl: true, isAdmin: true } },
       },
     },
+   },
   });
-
-  const room = await prisma.Private.findUnique({ 
-  where: { privateId },
-  select: { privateName: true },
- });
 
   broadcast(privateId, "postCreated", {
   postId: post.postId,
@@ -359,7 +385,7 @@ await Promise.all(
     prisma.notification.create({
       data: {
         userId: s.userId,
-        message: `${user.username} さんが${room.privateName}に投稿しました`,
+        message: `${user.username} さんが${private.privateName}に投稿しました`,
         url: `/privates/${privateId}#post-${post.postId}`,
       },
     })
@@ -369,21 +395,32 @@ await Promise.all(
 return c.json(post)
 });
 
-app.get('/privates/:privateId/events', (c) => {
+app.get('/:privateId/posts', async (c) => {
   const { privateId } = c.req.param();
 
-  return streamSSE(c, async (stream) => {
-    addStream(privateId, stream);
+  const posts = await prisma.PrivatePost.findMany({
+    where: {
+      privateId,
+      parentId: null,   // ← これが超重要
+      isDeleted: false,
+    },
+    orderBy: { createdAt: 'asc' },
+    include: {
+  user: { select: { username: true, iconUrl: true, isAdmin: true } },
+  replies: {
+    orderBy: { createdAt: 'asc' },
+    include: {
+      user: { select: { username: true, iconUrl: true, isAdmin: true } },
+    },
+  },
+},
 
-    stream.onAbort(() => {
-      removeStream(privateId, stream);
-    });
-
-    stream.writeSSE({ event: "connected", data: "ok" });
   });
+
+  return c.json(posts);
 });
 
-app.post('/privates/:privateId/replies', async (c) => {
+app.post('/:privateId/replies', async (c) => {
   const { user } = c.get('session') ?? {};
   if (!user?.userId) return c.text('ログインが必要です', 401);
 
@@ -393,10 +430,10 @@ app.post('/privates/:privateId/replies', async (c) => {
   if (!parentId) return c.text('parentId が必要です', 400);
 
   // parentId を postId として検索
-  const parent = await prisma.privatePost.findUnique({ where: { postId: parentId } });
+  const parent = await prisma.PrivatePost.findUnique({ where: { postId: parentId } });
   if (!parent) return c.text('返信先の投稿が見つかりません', 404);
 
-   // NGワードチェック（ここで content を使う）
+    // NGワードチェック（ここで content を使う）
   const bannedWords = [
     "殺す","殴る","蹴る","刺す","爆弾","危険",
     "バカ","死ね","ブス","キモい","アホ","差別","障害者","やめろ",
@@ -415,7 +452,7 @@ app.post('/privates/:privateId/replies', async (c) => {
     return c.text("!不適切な言葉が含まれています!", 400);
   }
 
-  const reply = await prisma.privatePost.create({
+  const reply = await prisma.PrivatePost.create({
   data: {
     privateId,
     userId: user.userId,
@@ -425,18 +462,29 @@ app.post('/privates/:privateId/replies', async (c) => {
     thumbnailUrl,
   },
   include: {
-    user: { select: { username: true, iconUrl: true } },
+    user: { select: { username: true, iconUrl: true, isAdmin: true } },
   },
 });
 
-const post = await prisma.privatePost.findUnique({
-  where: { postId: parentId },
+const post = await prisma.PrivatePost.findUnique({
+  where: { postId: parentId, isDeleted: false },
   select: { content: true },
 });
 
 broadcast(privateId, "replyCreated", {
+  replyId: reply.postId,
   parentId: reply.parentId,
+  content: reply.content,
+  imageUrl: reply.imageUrl,
+  thumbnailUrl: reply.thumbnailUrl,
+  createdAt: reply.createdAt,
+  user: {
+    username: reply.user.username,
+    iconUrl: reply.user.iconUrl,
+    isAdmin: reply.user.isAdmin,
+  },
 });
+
 
 // 親投稿のユーザー
 const parentUserId = parent.userId;
@@ -463,8 +511,80 @@ if (parentUserId !== user.userId) {
   }
 }
 
+const payload = {
+  replyId: reply.postId,
+  parentId: reply.parentId,
+  content: reply.content,
+  imageUrl: reply.imageUrl,
+  thumbnailUrl: reply.thumbnailUrl,
+  createdAt: reply.createdAt,
+  user: {
+    username: reply.user.username,
+    iconUrl: reply.user.iconUrl,
+    isAdmin: reply.user.isAdmin,
+  }
+};
+
+broadcast(privateId, "replyCreated", payload);
 
   return c.json(reply);
 });
 
+ app.get('/:privateId/replies', async (c) => {
+  const { privateId } = c.req.param();
+
+  const reply = await prisma.PrivatePost.findMany({
+    where: {
+      privateId,
+      isDeleted: false,
+    },
+    orderBy: { createdAt: 'asc' },
+    include: {
+      user: {
+        select: { username: true, iconUrl: true, isAdmin: true },
+      },
+    },
+  });
+
+  broadcast(privateId, {
+  event: "replyCreated",
+  data: reply
+});
+
+  return c.json(reply);
+});
+
+app.delete('/:privateId/posts/:postId', async (c) => {
+  const { postId } = c.req.param();
+  const { user } = c.get('session') ?? {};
+  if (!user) return c.text('ログインが必要です', 401);
+
+  const existingUser = await prisma.user.findUnique({ where: { userId: user.userId } });
+  if (!existingUser || !existingUser.isAdmin) {
+    return c.text('管理者権限が必要です', 403);
+  }
+
+  const post = await prisma.PrivatePost.findUnique({ where: { postId } });
+  if (!post) {
+    return c.text('投稿が見つかりません', 404);
+  }
+
+  await prisma.PrivatePost.update({
+    where: { postId },
+    data: { isDeleted: true },
+  });
+
+
+  // 投稿者に通知を送る
+
+  await prisma.notification.create({
+    data: {
+      userId: post.userId,
+      message: `あなたの投稿が管理者によって削除されました`,
+      url: `/privates/${post.privateId}`,
+    },
+  })
+
+  return c.json({ ok: true });
+});
 module.exports = app;

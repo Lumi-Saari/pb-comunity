@@ -246,7 +246,7 @@ app.post('/delete', async (c) => {
     });
 
     // 投稿を論理削除
-    await prisma.roomPost.updateMany({
+    await prisma.RoomPost.updateMany({
       where: { userId },
       data: { isDeleted: true },
     });

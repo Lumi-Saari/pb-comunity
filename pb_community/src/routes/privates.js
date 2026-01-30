@@ -2,6 +2,7 @@ const { Hono } = require('hono')
 const { html } = require('hono/html');
 const layout = require('../layout');
 const ensureAuthenticated = require('../middlewares/ensure-authenticated');
+const requireAdmin = require('../middlewares/requireAdmin');
 const { randomUUID } = require('node:crypto');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient({ log: ['query'] });
@@ -124,7 +125,7 @@ app.post('/:privateId/invitation', async (c) => {
     data: {
       privateId,
       userId: user.userId,
-      content: `${user.name} さんが ${invitee.username} さんを招待しました。`,
+      content: `${user.username} さんが ${invitee.username} さんを招待しました。`,
     },
   });
 
@@ -132,7 +133,7 @@ app.post('/:privateId/invitation', async (c) => {
    await prisma.notification.create({
   data: {
     userId: invitee.userId,
-    message: `${user.name} さんがあなたをプライベートルーム "${room.privateName}" に招待しました。`,
+    message: `${user.username} さんがあなたをプライベートルーム "${room.privateName}" に招待しました。`,
     url: `/privates/${privateId}`,
   },
 });
@@ -152,8 +153,10 @@ app.post('/:privateId/delete', async (c) => {
   });
   if (!room) return c.text('ルームが見つかりません', 404);
 
-  if (room.createBy !== user.userId) {
-    return c.text('このルームの作成者のみがルームを削除できます', 403);
+  const isAdmin = user.isAdmin;
+
+  if (room.createBy !== user.userId && !isAdmin) {
+    return c.text('作成者または管理者のみがルームを削除できます', 403);
   }
 
   //  投稿を削除
@@ -193,6 +196,22 @@ app.post('/:privateId/member/exit', async (c) => {
     },
   });
 
+  await prisma.privatePost.create({
+    data: {
+      privateId,
+      userId: user.userId,
+      content: `${user.username} さんがプライベートルームを退出しました。`,
+    },
+  })
+
+  await prisma.notification.create({
+    data: {
+      userId: room.createBy,
+      message: `${user.username} さんがプライベートルーム "${room.privateName}" から退出しました。`,
+      url: `/privates/${privateId}`,
+    },
+  })
+
   return c.redirect('/');
 })
 
@@ -217,7 +236,13 @@ app.get('/lists', async (c) => {
       'プライベートルーム一覧',
       html`
       <a href="/">トップページに戻る</a>
-        <h2>プライベートルーム一覧</h2>
+      <h2>プライベートルーム一覧</h2>
+      <h3>検索</h3>
+      <form method="post" action="/privates/lists/search">
+        <input type="text" name="q" placeholder="ルーム名で検索">
+        <button type="submit">検索</button>
+      </form>
+      <hr/>
         ${privates.length > 0
           ? privateTable(privates)
           : html`<p>まだ招待されているプライベートルームはありません</p>`}
@@ -226,12 +251,117 @@ app.get('/lists', async (c) => {
   );
 });
 
+app.get('/lists/search', async (c) => {
+  const { user } = c.get(('session')) ?? {};
+
+    if (!user) {
+    return c.redirect('/login');
+  }
+
+  const q = c.req.query('q') || '';
+
+  const rooms = await prisma.private.findMany({
+    where: {
+      privateName: { contains: q },
+      members: { some: { userId: user.userId } },
+    },
+    orderBy: { updatedAt: 'desc' },
+    select: { privateId: true, privateName: true, updatedAt: true },
+  });
+
+  return c.html(
+    layout(
+      c,
+      'プライベートルーム検索結果',
+      html`
+      <a href="/privates/lists">プライベートルーム一覧に戻る</a>
+        <h2>プライベートルーム検索結果</h2>
+        ${rooms.length > 0
+          ? privateTable(rooms)
+          : html`<p>検索結果が見つかりませんでした</p>`}
+      `
+    )
+  );
+});
+
+app.post('/lists/search', async (c) => {
+  const body = await c.req.parseBody();
+  const q = body.q || '';
+  return c.redirect(`/privates/lists/search?q=${encodeURIComponent(q)}`);
+});
+
+
+app.get('/api/privates/:privateId/posts', async (req, res) => {
+  const userId = req.session.userId;
+  const privateId = req.params.privateId;
+
+  const room = await db.getRoom(privateId);
+  if (room.is_private) {
+    const member = await db.getPrivateMember(privateId, userId);
+    if (!member) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+  }
+
+  const posts = await db.getPosts(privateId);
+  res.json(posts);
+});
+
+app.get('/:privateId/posts/search', async (c) => {
+  const { privateId } = c.req.param();
+  const q = c.req.query('q') || '';
+
+  const posts = await prisma.privatePost.findMany({
+    where: {
+      privateId,
+      content: { contains: q, mode: 'insensitive'},
+      isDeleted: false,
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { content: true, postId: true, createdAt: true, imageUrl: true, thumbnailUrl: true, user: { select: { username: true, iconUrl: true } } },
+  });
+
+  return c.html(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>投稿検索結果</title>
+        <link rel="stylesheet" href="/stylesheets/style.css" />
+        </head>
+        <body>
+        <a href="/privates/${privateId}">プライベートルームへ戻る</a>
+        <h1>投稿検索結果</h1>
+        <div>
+          ${posts.length > 0 ? 
+            posts.map(p => `
+            <p>
+      <strong>${p.user.username} ${p.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+      <img src="${p.user.iconUrl || '/uploads/default.jpg'}" width="40">
+      ${p.content || ''}<br/>
+      ${p.thumbnailUrl ? `<img src="${p.thumbnailUrl}" width="200" class="zoomable" data-full="${p.imageUrl}">` : ''}
+      <small>${new Date(p.createdAt).toLocaleString()}</small>
+    </p>
+            <hr/>
+          `).join('') : '<p>検索結果が見つかりませんでした</p>'}
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+app.post('/:privateId/posts/search', async (c) => {
+  const { privateId } = c.req.param();  
+  const body = await c.req.parseBody();
+  const q = body.q || '';
+  return c.redirect(`/privates/${privateId}/posts/search?q=${encodeURIComponent(q)}`);
+});
+
 app.get('/:privateId', async (c) => {
   const { privateId } = c.req.param();
 
 
 const private = await prisma.private.findUnique({
-  where: { privateId },
+  where: { privateId, },
   select: {
     privateName: true,
     user: {
@@ -241,8 +371,6 @@ const private = await prisma.private.findUnique({
     }
   }
 });
-
-
   if (!private) return c.text('ルームが存在しません', 404);
 
   const memo = await prisma.private.findUnique({
@@ -251,7 +379,7 @@ const private = await prisma.private.findUnique({
   }).then(r => r?.memo);
 
  const posts = await prisma.privatePost.findMany({
-  where: { privateId },
+  where: { privateId, isDeleted: false},
   orderBy: { createdAt: 'desc' },
   select: {
     postId: true,
@@ -261,7 +389,7 @@ const private = await prisma.private.findUnique({
     imageUrl: true,
     thumbnailUrl: true,
     user: {
-      select: { username: true, iconUrl: true }
+      select: { username: true, iconUrl: true, isAdmin: true }
     }
   }
 });
@@ -278,7 +406,6 @@ const tree = parents.map(parent => ({
  const { user } = c.get('session') ?? {};
 if (!user?.userId) return c.redirect('/login');
 
-// UserRoomSetting テーブルに notify TRUE/FALSE の設定があるか探す
 const setting = await prisma.userRoomSetting.findFirst({
   where: {
     privateId,
@@ -289,11 +416,38 @@ const setting = await prisma.userRoomSetting.findFirst({
 // 判定用フラグ
 const notifyEnabled = !!(setting && setting.notify);
 
+const isAdmin = user.isAdmin;
+
+  const member = await prisma.privateMember.findFirst({
+    where: {
+      privateId,
+      userId: user.userId,
+    },
+  });
+  if (!(member || isAdmin)) {
+    return c.text('アクセス権限がありません', 403);
+  }
+
 const postList = tree.map((p) => `
+<style>
+hr.end {
+  border: none;
+  border-top: 1px solid black;
+}
+.admin-badge {
+  background: #ffd700;
+  color: #000;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  margin-left: 6px;
+}
+</style>
+
   <div class="post" data-postid="${p.postId}">
     <p>
-      <strong>${p.user.username}</strong><br/>
-      <img src="${p.user.iconUrl || '/uploads/default.jpg'}" width="40">
+      <strong>${p.user.username} ${p.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+      <img src="${p.user.iconUrl || '/uploads/default.jpg'}" width="40"> ${deleteButtonHTML}
       ${p.content || ''}<br/>
       ${p.thumbnailUrl ? `<img src="${p.thumbnailUrl}" width="200" class="zoomable" data-full="${p.imageUrl}">` : ''}
       <small>${new Date(p.createdAt).toLocaleString()}</small>
@@ -301,7 +455,6 @@ const postList = tree.map((p) => `
 
     <!-- 返信するボタン -->
     <button class="reply-btn" data-parent="${p.postId}">返信</button>
-    
 
     <!-- 返信一覧開閉ボタン（返信がある場合のみ） -->
 <div id="reply-count-${p.postId}" data-count="${p.replyCount}">
@@ -311,7 +464,6 @@ const postList = tree.map((p) => `
       </button>
     ` : ''}
 </div>
-  
 
     <!-- 返信フォーム -->
     <form class="reply-form" data-parent="${p.postId}" style="display:none;">
@@ -325,39 +477,43 @@ const postList = tree.map((p) => `
       ${
         p.replies.map(r => `
           <div class="reply">
+             <hr/>
             <p>
-              <strong>${r.user.username}</strong><br/>
-              <img src="${r.user.iconUrl || '/uploads/default.jpg'}" width="40">
+              <strong>${r.user.username} ${r.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+              <img src="${r.user.iconUrl || '/uploads/default.jpg'}" width="40"> ${deleteButtonHTML}
               ${r.content}<br/>
               ${r.thumbnailUrl ? `<img src="${r.thumbnailUrl}" width="200" class="zoomable" data-full="${r.imageUrl}">` : ''}
               <small>${new Date(r.createdAt).toLocaleString()}</small>
             </p>
-            <hr/>
           </div>
         `).join('')
       }
     </div>
-
-    <hr/>
+   <hr class="end"/>
   </div>
 `).join('');
 
   return c.html(`
     <h1>${private.privateName}</h1>
-
+   <style>
+    .admin-badge {
+      background: #ffd700;
+      color: #000;
+      font-size: 12px;
+      padding: 2px 6px;
+      border-radius: 6px;
+      margin-left: 6px;
+    }
+    </style>
     <a href="/privates/lists">プライベートルーム一覧に戻る</a>
     <h4>説明: ${memo || 'なし'}</h4>
 
-    <h4>作成者: ${private.user.username}</h4>
+    <h4>作成者: ${private.user.username} ${private.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</h4>
 
     <form method="POST" action="/privates/${privateId}/invitation">
      <input type="text" name="username" placeholder="招待する人の名前">
      <button type="submit">招待する</button>
     </form>
-
-    <form method="POST" action="/privates/${privateId}/member/exit" onsubmit="return confirm('本当にこのプライベートルームから退出しますか？')"
-     <button type="submit">このプライベートルームから退出する</button>
-     </form>
 
      <button id="notify-btn-private"
      data-private-id="${privateId}"
@@ -371,13 +527,22 @@ const postList = tree.map((p) => `
   <button type="submit">更新</button>
    </form>
 
-    <form method="POST" action="/privates/${privateId}/delete" onsubmit="return confirm('本当にこのプライベートルームを削除しますか？')">
-      <button type="submit">このプライベートルームを削除する</button>
-    </form>
+   <form method="GET" action="/privates/${privateId}/posts/search">
+    <input type="text" name="q" placeholder="投稿を検索">
+    <button type="submit">検索</button>
+   </form>
 
-    <div id="postList">
-      ${postList || '<p>投稿はまだありません</p>'}
-    </div>
+    <form method="POST" action="/privates/${privateId}/member/exit" onsubmit="return confirm('退出すると、再招待されない限り入れません。本当に退出しますか？')">
+      <button type="submit">プライベートルームから退出する</button>
+     </form>
+
+<div id="postList">
+  ${
+    posts.length === 0
+      ? '<p>投稿はまだありません</p>'
+      : postList
+  }
+</div>
 
   <form id="postForm">
     <textarea name="content"></textarea>
@@ -385,54 +550,244 @@ const postList = tree.map((p) => `
     <button type="submit">投稿</button>
   </form>
 
-  <script>
+ <script>
   const loading = document.getElementById('loading');
    const privateId = "${privateId}";
     const form = document.getElementById('postForm');
     const postListContainer = document.getElementById('postList');
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
+    let pollingTimer = null;
+ function startPolling() {
+  if (pollingTimer) return;
+  pollingTimer = setInterval(fetchPosts, 5000);
+}
+function stopPolling() {
+  if (!pollingTimer) return;
+  clearInterval(pollingTimer);
+  pollingTimer = null;
+}
+function generatePostHTML(post) {
+  const replyCount = post.replies?.length || 0;
 
-      const content = form.querySelector('textarea[name="content"]').value;
-      const fileInput = form.querySelector('input[name="icon"]');
+  const currentUser = JSON.parse(
+  document.getElementById("current-user").textContent
+);
 
-       let imageUrl = null;
-       let thumbnailUrl = null;
+  const deleteButtonHTML = currentUser.isAdmin ? \`
+    <button class="delete-post-btn" data-postid="\${post.postId}">
+      削除
+      </button>\` : "";
 
-         if (fileInput.files.length > 0) {
-        const formData = new FormData();
-       formData.append('icon', fileInput.files[0]);
-       const res = await fetch('/privates/uploads', { method: 'POST', body: formData });
-        const data = await res.json();
-       imageUrl = data.url;          
-       thumbnailUrl = data.thumbnail; 
-        }
-
-      const res = await fetch(\`/privates/${privateId}/posts\`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, imageUrl, thumbnailUrl }),
-      }); 
-
-    const post = await res.json();
-
-      const postHtml = \`
+  return \`
+    <div class="post" data-postid="\${post.postId}">
       <p>
-        <strong>\${post.user.username}</strong><br/>
-        <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" alt="アイコン" width="40" height="40">
-        \${post.content || ''} <br/>
-        \${post.thumbnailUrl ? \`<br><img src="\${post.thumbnailUrl}" width="200" class="zoomable" data-full="\${post.imageUrl}">\` : ''}
-        <small>\${new Date(post.createdAt).toLocaleString()}</small>
+        <strong>\${post.user.username} \${post.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+        <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" width="40"> \${deleteButtonHTML}
+        \${post.content || ''}<br/>
+
+        \${post.thumbnailUrl
+          ? \`<img src="\${post.thumbnailUrl}" width="200" class="zoomable" data-full="\${post.imageUrl}">\`
+          : ''}
+
+        <small>$\{new Date(post.createdAt).toLocaleString()}</small>
       </p>
-      <hr/>\`;
 
-      postListContainer.innerHTML = postHtml + postListContainer.innerHTML;
-      form.reset();
+      <button class="reply-btn" data-parent="\${String(post.postId)}">返信</button>
+
+      \${replyCount > 0 ? \`
+        <button class="toggle-replies-btn" data-parent="\${String(post.postId)}">
+          ▼ \${replyCount}件の返信
+        </button>
+      \` : ''}
+
+      <form class="reply-form" data-parent="\${String(post.postId)}" style="display:none;">
+        <textarea name="content" rows="2"></textarea>
+        <input type="file" name="icon">
+        <button type="submit">送信</button>
+      </form>
+      <div class="replies"
+       data-parent="\${post.postId}"
+       style="display:none">
+  </div>
+      <hr class="end"/>
+    </div>
+  \`;
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const content = form.querySelector('textarea[name="content"]').value;
+  const fileInput = form.querySelector('input[name="icon"]');
+
+  let imageUrl = null;
+  let thumbnailUrl = null;
+
+  if (fileInput.files.length > 0) {
+    const formData = new FormData();
+    formData.append('icon', fileInput.files[0]);
+    const res = await fetch('/privates/uploads', { method: 'POST', body: formData });
+    const data = await res.json();
+    imageUrl = data.url;
+    thumbnailUrl = data.thumbnail;
+  }
+
+  await fetch(\`/privates/${privateId}/posts\`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, imageUrl, thumbnailUrl }),
+  });
+
+
+  await fetchPosts();
+
+  form.reset();
+});
+
+
+document.addEventListener("click", async (e) => {
+  if (!e.target.classList.contains("delete-post-btn")) return;
+
+  if (deleting) return;
+  deleting = true;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (!confirm("削除しますか？")) {
+    deleting = false;
+    return;
+  }
+
+  try {
+  const postId = e.target.dataset.postid;
+
+    const post = {
+      postId: postId,
+    };
+    if (!post.postId) {
+      alert("投稿IDが見つかりません");
+      deleting = false;
+      return;
+    }
+
+    const res = await fetch(\`/privates/${privateId}/posts/\${postId}\`, {
+      method: "DELETE",
     });
-    
-// 画像クリックで拡大
 
+    
+    if (!res.ok) {
+      alert("削除に失敗しました");
+      deleting = false;
+      return;
+    }
+
+    document
+      .querySelector(\`.post[data-postid="\${postId}"]\`)
+      ?.remove();
+
+  } finally {
+    deleting = false;
+  }
+});
+
+
+function renderAllPosts(posts) {
+  const container = document.getElementById('postList');
+  if (!container) return;
+
+  const serverPostIds = new Set(posts.map(p => String(p.postId)));
+
+  posts.forEach(post => {
+    if (post.parentId) return;
+
+    let postEl = container.querySelector(
+      \`.post[data-postid="\${post.postId}"]\`
+    );
+
+    if (!postEl) {
+      container.insertAdjacentHTML('beforeend', generatePostHTML(post));
+      postEl = container.querySelector(
+        \`.post[data-postid="\${post.postId}"]\`
+      );
+    }
+
+    const repliesBox = postEl.querySelector(
+      \`.replies[data-parent="\${String(post.postId)}"]\`
+      );
+
+    if (!repliesBox) return;
+    let toggleBtn = postEl.querySelector(
+      \`.toggle-replies-btn[data-parent="\${post.postId}"]\`
+    );
+
+if (!toggleBtn && post.replies.length > 0) {
+  postEl.querySelector('.reply-btn').insertAdjacentHTML(
+    'afterend',
+    \`
+    <button class="toggle-replies-btn" data-parent="\${post.postId}">
+      ▼ \${post.replies.length}件の返信
+    </button>
+    \`
+  );
+
+  toggleBtn = postEl.querySelector(
+    \`.toggle-replies-btn[data-parent="\${post.postId}"]\`
+  );
+}
+
+if (toggleBtn) {
+  toggleBtn.textContent = openReplies.has(String(post.postId))
+    ? '▲ 返信を隠す'
+    : \`▼ \${post.replies.length}件の返信\`;
+}
+
+const currentUser = JSON.parse(
+  document.getElementById("current-user").textContent
+);
+
+const deleteButtonHTML = currentUser.isAdmin ? \`
+    <button class="delete-post-btn" data-postid="\${post.postId}">
+      削除
+      </button>\` : "";
+
+
+// 中身だけ更新する（.replies 自体は作り直さない）
+repliesBox.innerHTML = post.replies.map(r => \`
+  <div class="reply">
+    <hr/>
+    <p>
+      <strong>\${r.user.username} \${r.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+      <img src="\${r.user.iconUrl || '/uploads/default.jpg'}" width="40"> \${deleteButtonHTML}
+      \${r.content}<br/>
+      \${r.thumbnailUrl
+        ? \`<img src="\${r.thumbnailUrl}" width="200" class="zoomable" data-full="\${r.imageUrl}">\`
+        : ''}
+      <small>\${new Date(r.createdAt).toLocaleString()}</small>
+    </p>
+  </div>
+\`).join('');
+
+  });
+  restoreOpenReplies();
+}
+
+async function fetchPosts() {
+  try {
+    const res = await fetch(\`/privates/${privateId}/posts\`);
+    const posts = await res.json();
+
+    renderAllPosts(posts);
+  } catch (err) {
+    console.error("Fetch failed:", err);
+  }
+}
+
+  fetchPosts();
+startPolling();
+
+
+// 画像クリックで拡大
 document.addEventListener('DOMContentLoaded', () => {
   const imgModal = document.getElementById('imgModal');
   const modalImg = document.getElementById('modalImg');
@@ -448,7 +803,6 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
   </script>
-
   <div id="imgModal" style="
   display:none;
   position:fixed;
@@ -463,86 +817,91 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <script>
 
-// 返信ボタンの開閉
+
+
 document.addEventListener('click', (e) => {
-  if (e.target.classList.contains('reply-btn')) {
-    const parentId = e.target.dataset.parent;
-    const form = document.querySelector(\`.reply-form[data-parent="\${parentId}"]\`);
-    if (form) {
-      form.style.display = form.style.display === 'none' ? 'block' : 'none';
-    }
-  }
+  if (!e.target.classList.contains('reply-btn')) return;
+
+  const parentId = e.target.dataset.parent;
+  const form = document.querySelector(
+    \`.reply-form[data-parent="\${String(parentId)}"]\`
+  );
+  if (!form) return;
+
+  const willOpen =
+    form.style.display === 'none' ||
+    getComputedStyle(form).display === 'none';
+
+  form.style.display = willOpen ? 'block' : 'none';
 });
 
+
+
 // 返信一覧の開閉
+const openReplies = new Set();
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.toggle-replies-btn');
   if (!btn) return;
-  if (btn.classList.contains('toggle-replies-btn')) {
-    const parentId = btn.dataset.parent;
-    const postEl = document.querySelector(\`.post[data-postid="\${parentId}"]\`);
-    if (!postEl) return;
 
-    const repliesBox = postEl.querySelector('.replies');
-    if (!repliesBox) return;
+  const parentId = String(btn.dataset.parent);
+  const repliesBox = document.querySelector(
+    \`.replies[data-parent="\${parentId}"]\`
+  );
+  if (!repliesBox) return;
 
-    const isHidden = repliesBox.style.display === 'none' ||
-    getComputedStyle(repliesBox).display === 'none'
-    ;
-    
-    repliesBox.style.display = isHidden ? 'block' : 'none';
-    btn.textContent = isHidden
-      ? '▲ 返信を隠す'
-      : \`▼ \${repliesBox.children.length}件の返信\`;
+  const isHidden =
+    repliesBox.style.display === 'none' ||
+    getComputedStyle(repliesBox).display === 'none';
+
+  repliesBox.style.display = isHidden ? 'block' : 'none';
+
+  if (isHidden) {
+    openReplies.add(parentId);
+    btn.textContent = '▲ 返信を隠す';
+  } else {
+    openReplies.delete(parentId);
+    const count = repliesBox.querySelectorAll('.reply').length;
+    btn.textContent = \`▼ \${count}件の返信\`;
   }
 });
-
-function ensureReplyToggleButton(parentId) {
-  const postEl = document.querySelector(\`.post[data-postid="\${parentId}"]\`);
-  if (!postEl) return;
-
-  // 既にボタンがあるなら作らない
-  if (postEl.querySelector(\`#reply-count-\${parentId}\`)) return;
-
-  // ボタンを作成
-  const btnHtml = \`
-    <button class="toggle-replies-btn" 
-            id="reply-count-\${parentId}" 
-            data-parent="\${parentId}" 
-            data-count="0">
-      ▼ 0件の返信
-    </button>
-  \`;
-
-  // 返信フォームの「直前」に挿入すると自然
-  const replyForm = postEl.querySelector(\`.reply-form[data-parent="\${parentId}"]\`);
-  replyForm.insertAdjacentHTML("beforebegin", btnHtml);
-  
-  if (!replyForm) return;
-  replyForm.insertAdjacentHTML('beforebegin', btnHtml);
+function restoreOpenReplies() {
+  openReplies.forEach((parentId) => {
+    const repliesBox = document.querySelector(
+      \`.replies[data-parent="\${parentId}"]\`
+    );
+    const toggleBtn = document.querySelector(
+      \`.toggle-replies-btn[data-parent="\${parentId}"]\`
+    );
+    if (repliesBox && toggleBtn) {
+      repliesBox.style.display = 'block';
+      toggleBtn.textContent = '▲ 返信を隠す';
+    }
+  });
 }
 
-// 返信フォーム送信
+// 返信フォームの送信処理
+
 document.addEventListener('submit', async (e) => {
+
   if (e.target.classList.contains('reply-form')) {
     e.preventDefault();
 
-    const form = e.target;  // ← ここが一番重要
-    const parentId = form.dataset.parent;
+    const form = e.target;
+    const parentId = e.target.dataset.parent
     const content = form.querySelector('textarea[name="content"]').value;
     const fileInput = form.querySelector('input[name="icon"]');
 
     let imageUrl = null;
     let thumbnailUrl = null;
 
-    if (fileInput.files.length > 0) {
+   if (fileInput.files.length > 0) {
       const fd = new FormData();
       fd.append('icon', fileInput.files[0]);
       const res = await fetch('/privates/uploads', { method: 'POST', body: fd });
       const data = await res.json();
       imageUrl = data.url;
       thumbnailUrl = data.thumbnail;
-    }
+    } 
 
     const res = await fetch(\`/privates/${privateId}/replies\`, {
       method: 'POST',
@@ -552,86 +911,52 @@ document.addEventListener('submit', async (e) => {
 
     const reply = await res.json();
 
-    // 返信 HTML
+    const currentUser = JSON.parse(
+  document.getElementById("current-user").textContent
+);
+
+    const deleteButtonHTML = currentUser.isAdmin ? \`
+    <button class="delete-post-btn" data-postid="\${reply.postId}">
+      削除
+      </button>\` : "";
+
     const replyHtml = \`
       <div class="reply">
+       <hr/>
         <p>
-          <strong>\${reply.user.username}</strong><br/>
-          <img src="\${reply.user.iconUrl || '/uploads/default.jpg'}" width="40">
+          <strong>\${reply.user.username} \${reply.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+          <img src="\${reply.user.iconUrl || '/uploads/default.jpg'}" width="40"> \${deleteButtonHTML}
           \${reply.content}<br/>
           \${reply.thumbnailUrl ? \`<img src="\${reply.thumbnailUrl}" width="200" class="zoomable" data-full="\${reply.imageUrl}">\` : ''}
           <small>\${new Date(reply.createdAt).toLocaleString()}</small>
         </p>
-        <hr/>
       </div>
     \`;
 
+   const parentPost = document.querySelector(
+  \`.post[data-postid="\${parentId}"] .replies\`
+)
 
-    // 親投稿の .replies に追加
-    const parentPost = document.querySelector(\`.post[data-postid="\${parentId}"] .replies\`);
-    if (parentPost) {
-      parentPost.insertAdjacentHTML('beforeend', replyHtml);
-    }
+if (parentPost) {
+  parentPost.style.display = 'block';
 
-    form.reset();
-    form.style.display = 'none';
+  const postEl = document.querySelector(
+    \`.post[data-postid="\${parentId}"]\`
+  );
 
-    // 返信カウント更新
-    const replyCountDiv = document.getElementById(\`reply-count-\${parentId}\`);
-    if (replyCountDiv) {
-      let count = parseInt(replyCountDiv.dataset.count, 10) || 0;
-      count += 1;
-      replyCountDiv.dataset.count = count.toString();
+  const existingBtn = postEl.querySelector(
+    \`.toggle-replies-btn[data-parent="\${String(parentId)}"]\`
+  );
+openReplies.add(String(parentId));
+await fetchPosts();
+}
+  
+form.reset();
+form.style.display = 'none';
 
-      // ボタンテキスト更新
-      const toggleBtn = replyCountDiv.querySelector('.toggle-replies-btn');
-      if (toggleBtn) {
-        toggleBtn.textContent = \`▼ \${count}件の返信\`;
-      }
-    } else {
-      // まだボタンがなければ作成
-      ensureReplyToggleButton(parentId);
-    }
-  }
-}); 
-
-// SSE受信設定
-/*
-const evtSource = new EventSource(\`/privates/${privateId}/events\`);
-*/
-
-// 新規投稿受信
-
-evtSource.addEventListener('postCreated', (e) => {
-  const post = JSON.parse(e.data);
-
-  const postHtml = \`
-  <div class="post" data-postid="\${post.postId}">
-    <p>
-      <strong>\${post.user.username}</strong><br/>
-      <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" width="40">
-      \${post.content || ''}<br/>
-      \${post.thumbnailUrl ? \`<img src="\${post.thumbnailUrl}" class="zoomable" width="200" data-full="\${post.imageUrl}">\` : ''}
-      <small>\${new Date(post.createdAt).toLocaleString()}</small>
-    </p>
-
-    <button class="reply-btn" data-parent="\${post.postId}">返信</button>
-
-    <form class="reply-form" data-parent="\${post.postId}" style="display:none;">
-      <textarea name="content" rows="2" placeholder="返信を書く"></textarea>
-      <input type="file" name="icon" accept="image/*">
-      <button type="submit">送信</button>
-    </form>
-
-    <div class="replies" data-parent="\${post.postId}" style="display:none;"></div>
-    <hr/>
-  </div>
-  \`;
-
-  document.getElementById('postList')
-          .insertAdjacentHTML('afterbegin', postHtml);
+await fetchPosts();
+}
 });
-
 </script>
 
   `);

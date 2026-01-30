@@ -22,6 +22,7 @@ users.get('/', async (c) => {
       bio: true,
       iconUrl: true,
       createdAt: true,
+      isAdmin: true,
     },
   });
 
@@ -44,7 +45,7 @@ users.get('/', async (c) => {
   // HTML
   const userList = allUsers.map(p => `
     <p><h3><img src="${p.iconUrl || '/uploads/default.jpg'}" alt="アイコン" width="50" height="50">
-    <strong>${p.username ?? '名無しユーザー'}</h3></strong></p>
+    <strong>${p.username ?? '名無しユーザー'} ${p.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</h3></strong></p>
     <p>活動場所: ${p.activityPlace ?? '未設定'}</p>
     <p>自己紹介: ${p.bio ?? '未設定'}</p>
     <hr/>
@@ -58,6 +59,16 @@ users.get('/', async (c) => {
         <link rel="stylesheet" href="/stylesheets/style.css" />
       </head>
       <body>
+      <style>
+      .admin-badge {
+        background: #ffd700;
+  color: #000;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  margin-left: 6px;
+      }
+      </style>
         <h1>ユーザー一覧</h1>
         <a href="/">ホームへ戻る</a>
         <div>
@@ -65,10 +76,78 @@ users.get('/', async (c) => {
           <a href="/users?sort=created">登録順</a> |
           <a href="/users?sort=latest">新しい順</a>
         </div>
+        <h3>ユーザー検索</h3>
+        <form method="post" action="/users/search">
+          <input type="text" name="q" placeholder="ユーザー名で検索する" />
+          <button type="submit">検索</button>
+        </form>
         <div id="userList">${userList}</div>
       </body>
     </html>
   `);
 });
+
+users.get('/search', async (c) => {
+  const { user } = c.get('session');
+  if (!user) return c.redirect('/auth/google');
+
+  const q = c.req.query('q') || '';
+
+  const results = await prisma.user.findMany({
+    where: {
+      username: { contains: q, mode: 'insensitive' },
+      isDeleted: false,
+    },
+    select: {
+      userId: true,
+      username: true,
+      activityPlace: true,
+      bio: true,
+      iconUrl: true,
+      createdAt: true,
+      isAdmin: true,
+    },
+  })
+  console.log(results);
+
+  return c.html(`
+    <!doctype html>
+    <html>
+      <head>
+        <title>ユーザー検索結果</title>
+        <link rel="stylesheet" href="/stylesheets/style.css" />
+      </head>
+      <body>
+      <style>
+      .admin-badge {
+        background: #ffd700;
+        color: #000;
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 6px;
+         margin-left: 6px;
+      }
+      </style>
+      <a href="/users">ユーザー一覧へ戻る</a>
+        <h1>ユーザー検索結果</h1>
+        <div>
+          ${results.map(p => `
+            <p><h3><img src="${p.iconUrl || '/uploads/default.jpg'}" alt="アイコン" width="50" height="50">
+            <strong>${p.username ?? '名無しユーザー'} ${p.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</h3></strong></p>
+            <p>活動場所: ${p.activityPlace ?? '未設定'}</p>
+            <p>自己紹介: ${p.bio ?? '未設定'}</p>
+            <hr/>
+          `).join('')}
+        </div>
+      </body>
+    </html>
+        `)
+});
+
+users.post('/search', async (c) => {
+  const body = await c.req.parseBody();
+  const q = body.q || '';
+  return c.redirect(`/users/search?q=${encodeURIComponent(q)}`);
+})
 
 module.exports = users;

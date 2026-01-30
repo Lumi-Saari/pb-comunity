@@ -2,6 +2,7 @@ const { Hono } = require('hono')
 const { html } = require('hono/html');
 const layout = require('../layout');
 const ensureAuthenticated = require('../middlewares/ensure-authenticated');
+const requireAdmin = require('../middlewares/requireAdmin');
 const { randomUUID } = require('node:crypto');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient({ log: ['query'] });
@@ -9,6 +10,7 @@ const prisma = new PrismaClient({ log: ['query'] });
 const app = new Hono();
 
 app.use(ensureAuthenticated());
+
 
 function roomTable(rooms) {
   return html`
@@ -85,10 +87,12 @@ app.post('/:roomId/delete', async (c) => {
 
   const room = await prisma.room.findUnique({ where: { roomId} });
   if (!room) return c.text('ルームが見つかりません', 404);
+  
+  const isAdmin = user.isAdmin;
 
   // 作成者チェックを追加
-  if (room.createBy !== user.userId) {
-    return c.text('このルームの作成者のみがルームを削除できます', 403);
+  if (room.createBy !== user.userId && !isAdmin) {
+    return c.text('作成者または管理者のみがルームを削除できます', 403);
   }
 
   await prisma.roomPost.deleteMany({ where: { roomId } });
@@ -140,6 +144,12 @@ app.get('/lists', async (c) => {
       html`
         <a href="/">トップページへ戻る</a>
         <h2>ルーム一覧</h2>
+        <h3>検索</h3>
+        <form method="get" action="/rooms/lists/search">
+          <input type="text" name="q" placeholder="ルーム名で検索"/>
+          <button type="submit">検索</button>
+        </form>
+        <hr/>
         ${rooms.length > 0
           ? roomTable(rooms)
           : html`<p>まだルームはありません</p>`}
@@ -148,7 +158,98 @@ app.get('/lists', async (c) => {
   );
 });
 
+app.get('/lists/search', async (c) => {
+  const { user } = c.get('session') ?? {};
+  const q = c.req.query('q') || '';
+
+  if (!user) {
+    return c.redirect('/login');
+  }
+
+  const rooms = await prisma.room.findMany({
+    where: {
+      roomName: {
+        contains: q,
+      },
+    },
+    orderBy: { updatedAt: 'desc' },
+    select: { roomId: true, roomName: true, updatedAt: true },
+  });
+
+  return c.html(
+    layout(
+      c,
+      'ルーム検索結果',
+      html`
+       <a href="/rooms/lists">ルーム一覧に戻る</a>
+       <h2>ルーム検索結果: 「${q}」</h2>
+        ${rooms.length > 0
+          ? roomTable(rooms)
+          : html`<p>該当するルームはありません</p>`}
+      `
+    )
+  );
+});
+
+app.post('/lists/search', async (c) => {
+  const body = await c.req.parseBody();
+  const q = body.q || '';
+  return c.redirect(`/rooms/lists/search?q=${encodeURIComponent(q)}`);
+});
+
+app.get('/:roomId/posts/search', async (c) => {
+  const { roomId } = c.req.param();
+  const q = c.req.query('q') || '';
+
+  const posts = await prisma.RoomPost.findMany({
+    where: {
+      roomId,
+      content: { contains: q, mode: 'insensitive'},
+      isDeleted: false,
+    },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      content: true, postId: true, createdAt: true, imageUrl: true, thumbnailUrl: true, isDeleted: true, user: { select: { username: true, iconUrl: true }},
+    }
+  });
+
+  app.post('/:roomId/posts/search', async (c) => {
+  const { roomId } = c.req.param();  
+  const body = await c.req.parseBody();
+  const q = body.q || '';
+  return c.redirect(`/rooms/${roomId}/posts/search?q=${encodeURIComponent(q)}`);
+});
+
+  return c.html(`
+    <!doctype html>
+    <html>
+     <head>
+      <title>投稿検索結果</title>
+      <link rel="stylesheet" href="/stylesheets/style.css" />
+      </head>
+      <body>
+      <a href="/rooms/${roomId}">ルームへ戻る</a>
+        <h1>投稿検索結果</h1>
+        <div>
+         ${posts.length > 0 ?
+          posts.map(p => `
+            <p>
+            <strong>${p.user.username}</strong><br/>
+            <img src="${p.user.iconUrl || '/uploads/default.jpg'}" width="40">${p.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}
+            ${p.content || '' }<br/>
+            ${p.thumbnailUrl ? `<img src="${p.thumbnailUrl}" width="200" class="zoomable" data-full="${p.imageUrl}">` : '' }
+            <small>${new Date(p.createdAt).toLocaleDateString()}</small>
+            </p>
+            <hr/>
+            `).join('') : '<p>検索結果が見つかりませんでした。</p>'}
+            </div>
+      </body>
+    </html>
+         `)
+});
+
 app.get('/:roomId', async (c) => {
+
   const { roomId } = c.req.param();
   const memo = await prisma.room.findUnique({
     where: { roomId },
@@ -169,10 +270,11 @@ app.get('/:roomId', async (c) => {
 
   if (!room) return c.text('ルームが存在しません', 404);
 
-const posts = await prisma.roomPost.findMany({
+const posts = await prisma.RoomPost.findMany({
   where: {
     roomId,
     parentId: null, 
+    isDeleted: false,
   },
   orderBy: { createdAt: 'desc' },
   select: {
@@ -181,23 +283,27 @@ const posts = await prisma.roomPost.findMany({
     createdAt: true,
     imageUrl: true,
     thumbnailUrl: true,
+    isDeleted: true,
     user: {
-      select: { username: true, iconUrl: true },
+      select: { username: true, iconUrl: true, isAdmin: true },
     },
     replies: {
+      where: { isDeleted: false },
       orderBy: { createdAt: 'asc' },
       select: {
         postId: true,
         parentId: true,
         content: true,
         createdAt: true,
+        isDeleted: true,
         user: {
-          select: { username: true, iconUrl: true },
+          select: { username: true, iconUrl: true, isAdmin: true},
         },
       },
     },
   },
 });
+
 
 
 // 親投稿だけ
@@ -212,6 +318,7 @@ const tree = parents.map(parent => ({
 
  const { user } = c.get('session') ?? {};
 
+
 // UserRoomSetting テーブルに notify TRUE/FALSE の設定があるか探す
 const setting = await prisma.userRoomSetting.findFirst({
   where: {
@@ -223,18 +330,26 @@ const setting = await prisma.userRoomSetting.findFirst({
 // 判定用フラグ
 const notifyEnabled = !!(setting && setting.notify);
 
-
 const postList = tree.map((p) => `
 <style>
 hr.end {
   border: none;
   border-top: 1px solid black;
 }
+  .admin-badge {
+  background: #ffd700;
+  color: #000;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  margin-left: 6px;
+}
+
 </style>
 
   <div class="post" data-postid="${p.postId}">
     <p>
-      <strong>${p.user.username}</strong><br/>
+      <strong>${p.user.username} ${p.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
       <img src="${p.user.iconUrl || '/uploads/default.jpg'}" width="40">
       ${p.content || ''}<br/>
       ${p.thumbnailUrl ? `<img src="${p.thumbnailUrl}" width="200" class="zoomable" data-full="${p.imageUrl}">` : ''}
@@ -267,7 +382,7 @@ hr.end {
           <div class="reply">
              <hr/>
             <p>
-              <strong>${r.user.username}</strong><br/>
+              <strong>${r.user.username}${r.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
               <img src="${r.user.iconUrl || '/uploads/default.jpg'}" width="40">
               ${r.content}<br/>
               ${r.thumbnailUrl ? `<img src="${r.thumbnailUrl}" width="200" class="zoomable" data-full="${r.imageUrl}">` : ''}
@@ -285,7 +400,7 @@ return c.html(`
   <h1>${room.roomName}</h1>
   <a href="/rooms/lists">ルーム一覧に戻る</a>
   <h4>説明: ${memo || 'なし'}</h4>
-  <h4>作成者: ${room.user.username}</h4>
+  <h4>作成者: ${room.user.username}${room.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</h4>
   <button id="notify-btn-room"
    data-room-id="${roomId}"
    data-notify="${notifyEnabled ? 'true' : 'false'}">
@@ -296,6 +411,11 @@ return c.html(`
   <form action="/rooms/${roomId}/memo" method="post">
     <textarea name="memo" rows="5" cols="40" maxlength="50" placeholder="ここに新しい説明"></textarea>
     <button type="submit">更新</button>
+  </form>
+
+  <form method="GET" action="/rooms/${roomId}/posts/search">
+  <input type="text" name="q" placeholder="投稿を検索">
+  <button type="submit">検索</button>
   </form>
 
   <form method="POST" action="/rooms/${roomId}/delete" onsubmit="return confirm('本当にこのルームを削除しますか？')">
@@ -321,8 +441,23 @@ hr.end {
   border: none;
   border-top: 1px solid black;
 }
+
+.admin-badge {
+  background: #ffd700;
+  color: #000;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  margin-left: 6px;
+}
 </style>
 
+<script id="current-user" type="application/json">
+      ${JSON.stringify({
+        userId: user.userId,
+        isAdmin: user.isAdmin,
+      })}
+    </script>
 
  <script>
   const loading = document.getElementById('loading');
@@ -330,8 +465,8 @@ hr.end {
     const form = document.getElementById('postForm');
     const postListContainer = document.getElementById('postList');
 
+  
     let pollingTimer = null;
-
  function startPolling() {
   if (pollingTimer) return;
   pollingTimer = setInterval(fetchPosts, 5000);
@@ -344,18 +479,28 @@ function stopPolling() {
 function generatePostHTML(post) {
   const replyCount = post.replies?.length || 0;
 
+  const currentUser = JSON.parse(
+  document.getElementById("current-user").textContent
+);
+
+
+  const deleteButtonHTML = currentUser.isAdmin ? \`
+    <button class="delete-post-btn" data-postid="\${post.postId}">
+      削除
+      </button>\` : "";
+
   return \`
     <div class="post" data-postid="\${post.postId}">
       <p>
-        <strong>\${post.user.username}</strong><br/>
-        <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" width="40">
+        <strong>\${post.user.username}\${post.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+        <img src="\${post.user.iconUrl || '/uploads/default.jpg'}" width="40">\${deleteButtonHTML}<br/> 
         \${post.content || ''}<br/>
 
         \${post.thumbnailUrl
           ? \`<img src="\${post.thumbnailUrl}" width="200" class="zoomable" data-full="\${post.imageUrl}">\`
           : ''}
 
-        <small>$\{new Date(post.createdAt).toLocaleString()}</small>
+        <small>\${new Date(post.createdAt).toLocaleString()}</small>
       </p>
 
       <button class="reply-btn" data-parent="\${String(post.postId)}">返信</button>
@@ -410,8 +555,65 @@ form.addEventListener('submit', async (e) => {
   form.reset();
 });
 
+let deleting = false;
+
+document.addEventListener("click", async (e) => {
+  if (!e.target.classList.contains("delete-post-btn")) return;
+
+  if (deleting) return;
+  deleting = true;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  if (!confirm("削除しますか？")) {
+    deleting = false;
+    return;
+  }
+
+  try {
+  const postId = e.target.dataset.postid;
+
+    const post = {
+      postId: postId,
+    };
+    if (!post.postId) {
+      alert("投稿IDが見つかりません");
+      deleting = false;
+      return;
+    }
+
+    const res = await fetch(\`/rooms/${roomId}/posts/\${postId}\`, {
+      method: "DELETE",
+    });
+
+    
+    if (!res.ok) {
+      alert("削除に失敗しました");
+      deleting = false;
+      return;
+    }
+
+    document
+      .querySelector(\`.post[data-postid="\${postId}"]\`)
+      ?.remove();
+
+  } finally {
+    deleting = false;
+  }
+});
+
 function renderAllPosts(posts) {
   const container = document.getElementById('postList');
+
+  const serverPostIds = new Set(posts.map(p => String(p.postId)));
+
+  container.querySelectorAll('.post').forEach(el => {
+    const id = el.dataset.postid;
+    if (!serverPostIds.has(id)) {
+      el.remove();
+    }
+  });
 
   posts.forEach(post => {
     if (post.parentId) return;
@@ -457,14 +659,22 @@ if (toggleBtn) {
     : \`▼ \${post.replies.length}件の返信\`;
 }
 
+const currentUser = JSON.parse(
+  document.getElementById("current-user").textContent
+);
+
+const deleteButtonHTML = currentUser.isAdmin ? \`
+    <button class="delete-post-btn" data-postid="\${post.postId}">
+      削除
+      </button>\` : "";
 
 // 中身だけ更新する（.replies 自体は作り直さない）
 repliesBox.innerHTML = post.replies.map(r => \`
   <div class="reply">
     <hr/>
     <p>
-      <strong>\${r.user.username}</strong><br/>
-      <img src="\${r.user.iconUrl || '/uploads/default.jpg'}" width="40">
+      <strong>\${r.user.username}\${r.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+      <img src="\${r.user.iconUrl || '/uploads/default.jpg'}" width="40">\${deleteButtonHTML}<br/> 
       \${r.content}<br/>
       \${r.thumbnailUrl
         ? \`<img src="\${r.thumbnailUrl}" width="200" class="zoomable" data-full="\${r.imageUrl}">\`
@@ -491,7 +701,6 @@ async function fetchPosts() {
 
   fetchPosts();
 startPolling();
-
 
 
 // 画像クリックで拡大
@@ -523,8 +732,6 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 
 <script>
-
-
 
 document.addEventListener('click', (e) => {
   if (!e.target.classList.contains('reply-btn')) return;
@@ -586,6 +793,7 @@ function restoreOpenReplies() {
   });
 }
 
+
 // 返信フォームの送信処理
 
 document.addEventListener('submit', async (e) => {
@@ -618,12 +826,21 @@ document.addEventListener('submit', async (e) => {
 
     const reply = await res.json();
 
+    const currentUser = JSON.parse(
+  document.getElementById("current-user").textContent
+);
+
+    const deleteButtonHTML = currentUser.isAdmin ? \`
+    <button class="delete-post-btn" data-postid="\${reply.postId}">
+      削除
+      </button>\` : "";
+
     const replyHtml = \`
       <div class="reply">
        <hr/>
         <p>
-          <strong>\${reply.user.username}</strong><br/>
-          <img src="\${reply.user.iconUrl || '/uploads/default.jpg'}" width="40">
+          <strong>\${reply.user.username}\${reply.user.isAdmin ? '<span class="admin-badge">👑 管理者</span>' : ''}</strong><br/>
+          <img src="\${reply.user.iconUrl || '/uploads/default.jpg'}" width="40">\${deleteButtonHTML}<br/> 
           \${reply.content}<br/>
           \${reply.thumbnailUrl ? \`<img src="\${reply.thumbnailUrl}" width="200" class="zoomable" data-full="\${reply.imageUrl}">\` : ''}
           <small>\${new Date(reply.createdAt).toLocaleString()}</small>
@@ -652,18 +869,9 @@ await fetchPosts();
 form.reset();
 form.style.display = 'none';
 
-async function fetchPosts() {
-  const res = await fetch(\`/rooms/${roomId}/posts\`);
-  const posts = await res.json();
-
-  console.log(
-    posts.find(p => p.postId === parentId)
-  );
-
-  renderAllPosts(posts);
+await fetchPosts();
 }
-}
-});
+    });
 </script>
 `);
 
